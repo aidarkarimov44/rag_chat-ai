@@ -1,0 +1,9 @@
+python-dotenv
+langchain
+langgraph
+langchain-community
+langchain-postgres
+langchain-core
+langchain-huggingface
+sentence-transformers
+yandexcloud
