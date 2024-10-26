@@ -1,12 +1,13 @@
 # app/schemas/chat.py
 from pydantic import BaseModel
-from typing import List, Optional
 from datetime import datetime
+from typing import List
 
-class MessageSchema(BaseModel):
+class LastMessageSchema(BaseModel):
     sender: str
     content: str
-    timestamp: Optional[datetime] = None
+    timestamp: datetime
 
-class ChatHistoryResponse(BaseModel):
-    messages: List[MessageSchema]
+class ChatWithLastMessageResponse(BaseModel):
+    chat_id: int
+    last_message: LastMessageSchema
