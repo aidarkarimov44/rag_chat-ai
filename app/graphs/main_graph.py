@@ -7,7 +7,7 @@ from ..schemas.state import State
 from ..services.llm import llm
 from ..logger import setup_logger
 from langchain_core.output_parsers import StrOutputParser
-from ..services.vector_store import get_vectorstore
+from ..database.vector_store import get_vectorstore
 
 logger = setup_logger(__name__)
 
@@ -45,3 +45,4 @@ async def classify_index(state:State) -> State:  # -> Literal["index", "general"
         return {"is_index":False}
     else:
         return {"is_index":True}
+
