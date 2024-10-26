@@ -1,14 +1,7 @@
-import json
 import logging
 import uuid
-from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.database.connection import AsyncSessionLocal, get_db
-from app.database.crud import create_chat_message
-from app.schemas.state import State
+from fastapi import FastAPI, HTTPException
 
 main_graph = None
 
@@ -24,11 +17,11 @@ logger = logging.getLogger(__name__)
 #     yield
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 
-@app.post("/api/v1/user")
-async def newUser():
+@app.post("/api/v1/branch")
+async def newBranch():
     try:
         return {"user_id": uuid.uuid4()}
     except Exception as e:
