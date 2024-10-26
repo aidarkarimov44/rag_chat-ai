@@ -1,0 +1,778 @@
+├── Dockerfile
+├── app/
+│   ├── __init__.py
+│   ├── api/
+│   │   ├── __init__.py
+│   │   └── endpoints.py
+│   ├── chunks_creating.py
+│   ├── config.py
+│   ├── database/
+│   │   ├── __init__.py
+│   │   └── vector_store.py
+│   ├── graphs/
+│   │   ├── __init__.py
+│   │   └── main_graph.py
+│   ├── logger.py
+│   ├── main.py
+│   ├── photo_indexes.py
+│   ├── schemas/
+│   │   ├── __init__.py
+│   │   └── state.py
+│   └── services/
+│       ├── __init__.py
+│       └── llm.py
+├── core/
+│   ├── __init__.py
+│   ├── config.py
+│   └── models/
+│       ├── __init__.py
+│       ├── base.py
+│       ├── crud.py
+│       ├── db_helper.py
+│       ├── document.py
+│       ├── mixins.py
+│       └── user.py
+├── docker-compose.yml
+├── images/
+└── requirements.txt
+
+Dockerfile
+
+
+
+app/__init__.py
+
+
+
+app/api/__init__.py
+
+
+
+app/api/endpoints.py
+
+
+
+app/chunks_creating.py
+
+import re
+from docx import Document as DocxDocument
+from langchain.schema import Document
+import photo_indexes
+import os
+
+# Чтение текста из файла .docx
+def load_text_from_docx(file_path):
+    doc = DocxDocument(file_path)
+    full_text = []
+    for para in doc.paragraphs:
+        full_text.append(para.text)
+    return "\n".join(full_text)
+
+# Путь к твоему файлу .docx
+file_path = "documentation_preprocessed.docx"
+
+# Загружаем текст из файла
+text_content = load_text_from_docx(file_path)
+
+# titles из твоего словаря заголовков, включая Аннотацию и КОНТАКТНУЮ ИНФОРМАЦИЮ
+titles = photo_indexes.titles
+titles["Аннотация"] = "Аннотация"
+titles["КОНТАКТНАЯ ИНФОРМАЦИЯ"] = "КОНТАКТНАЯ ИНФОРМАЦИЯ"
+
+# Регулярное выражение для поиска заголовков, включая их название (добавлены "Аннотация" и "КОНТАКТНАЯ ИНФОРМАЦИЯ")
+heading_pattern = re.compile(r"(\d+(\.\d+)*|Аннотация|КОНТАКТНАЯ ИНФОРМАЦИЯ)")
+
+# Функция для разделения текста на части по заголовкам (включая название)
+def split_text_by_headings(text: str, titles: dict):
+    documents = []
+    matches = list(heading_pattern.finditer(text))
+    
+    for i in range(len(matches)):
+        start = matches[i].start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        
+        chapter = matches[i].group(1).strip()  # номер главы или специальный заголовок
+        chapter_title = titles.get(chapter, "Неизвестный заголовок")  # заголовок из словаря titles
+        
+        # Извлечение содержимого между заголовками (включая заголовок)
+        content = text[start:end].strip()
+        
+        # Поиск связанных путей к фотографиям для данной главы
+        image_paths = get_files_by_number(chapter)  # используем ранее написанную функцию
+
+        # Создаем объект Document с метаданными
+        doc = Document(
+            page_content=content[:1000],
+            metadata={
+                "content":content,
+                "chapter": chapter,
+                "title": chapter_title,
+                "paths": image_paths
+            }
+        )
+        documents.append(doc)
+    
+    return documents
+
+# Получение файлов по номеру главы (реализуй эту функцию)
+def get_files_by_number(number):
+    # Здесь функция get_files_by_number уже должна быть реализована
+    # для получения путей к фоткам, которые соответствуют главе
+    return [f for f in os.listdir("images") if f.startswith(str(number)+'_')]
+
+# Применяем функцию для разделения текста
+documents = split_text_by_headings(text_content, titles)
+print(len(documents))
+# Выводим результат
+# count = 10
+# for doc in documents:
+#     print(f"{doc.metadata['chapter']}, Заголовок: {doc.metadata['title']}")
+#     print(f"Пути к фоткам: {doc.metadata['paths']}")
+#     print(f"Содержимое:\n{len(doc.page_content), doc.page_content}") 
+#     if count==-1:
+#         break
+#     count -=1
+#     print()
+
+app/config.py
+
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+class Settings:
+    YANDEXGPT_IAM_TOKEN:str=os.getenv("YANDEXGPT_IAM_TOKEN")
+    YANDEXGPT_MODEL_URI:str=os.getenv("YANDEXGPT_MODEL_URI")
+
+
+settings = Settings()
+
+app/database/__init__.py
+
+
+
+app/database/vector_store.py
+
+from functools import lru_cache
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_postgres import PGVector
+from ..config import settings
+from ..chunks_creating import documents
+
+@lru_cache
+def get_vectorstore() -> PGVector:
+    embeddings = HuggingFaceEmbeddings(
+        model_name=settings.EMBEDDINGS_MODEL,
+        model_kwargs={"device": settings.DEVICE}
+    )
+    vectorstore = PGVector(
+        embeddings=embeddings,
+        collection_name=settings.PG_COLLECTION_NAME,
+        connection=settings.PG_CONNECTION,
+        use_jsonb=True,
+        async_mode=True,
+    )
+    return vectorstore
+
+vectorstore = get_vectorstore()
+
+vectorstore.add_documents(documents=documents)
+
+app/graphs/__init__.py
+
+
+
+app/graphs/main_graph.py
+
+from typing import Dict, Any, Literal, TypedDict
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables.config import RunnableConfig
+from ..schemas.state import State
+from ..services.llm import llm_light, llm_pro
+from ..logger import setup_logger
+from langchain_core.output_parsers import StrOutputParser
+from ..database.vector_store import get_vectorstore
+
+logger = setup_logger(__name__)
+
+graph = StateGraph(State)
+
+general_answer = """Данный вопрос определен как не связанный с руководством пользователя, пожалуйста попробуйте снова или обратитесь в наш отдел технической поддержки."""
+
+async def classify_index(state:State) -> State:  # -> Literal["index", "general"]:
+    with open("index_summary.txt", "r") as f:
+        index = f.read()
+    prompt_template = """
+    Ты - оператор чат бота, задача которого отвечать на вопросы пользователей связанные с руководством приложения. Ты должен определить связан ли вопрос конкретно с программой или руководством или он на общую тему.
+    Тебе будет дан текущий запрос пользователя и выжимка из руководства пользователя. Ты должен вернуть ответ строго одним словом, либо 'Да' либо 'Нет'.
+    Напиши 'Да' если текущий вопрос пользователя связан с программой или руководством и 'Нет' если текущий вопрос пользователя идет на отвлеченную тему.
+    Выжимка из руководства:
+
+    {summary}
+
+    Последние сообщения пользователя:
+
+    {user_context}
+
+    Текущий вопрос пользователя
+
+    {user_message}
+
+    Ответ:
+    """
+    prompt = PromptTemplate.from_template(prompt_template)
+    bound = prompt | llm_light | StrOutputParser()
+    response:str = await bound.ainvoke({
+        "summary":index,
+        "user_context":"\n".join([el[1] for el in state["last_messages"] if el[0] == "user"]),
+        "user_message":state["user_message"]
+    })
+    if response.replace("'", "").lower() == "нет" or response.replace("'", "").lower().endswith("нет"):
+        return {"is_index":False, "answer":general_answer, "rel_docs":[]}
+    else:
+        return {"is_index":True}
+
+def route_index(state:State) -> Literal["get_relevant_docs", "__end__"]:
+    if state["is_index"]:
+        return "get_relevant_docs"
+    else:
+        return END
+
+# doc_schema:
+# {"1.1.1(.1)":{"text":str, "images":list[str]("paths")}}
+# {"1.1.1.1":Document()}
+
+async def get_relevant_docs(state:State) -> State:
+    vectorstore = get_vectorstore()
+    return {'rel_docs':[{el.metadata["chapter"]:{"text":el.metadata["content"], "images":el.metadata["image_paths"]}} for el in await vectorstore.asimilarity_search(query=state["db_query"])]}
+
+async def score_docs(state:State)->State:
+    new_rel_docs=[]
+    prompt_template="""
+    Ты - оператор чат бота помощника по руководству по сайту Сила. Твоя задача по предоставленному запросу пользователя определить является ли предложенный раздел документации подходящим.
+    В руководстве могут быть описаны инструкции, помощь с обработкой ошибок, навигацией по сайту. Ответ должен состоять из одного слова, либо 'Да', либо 'Нет'.
+    Отвечай 'Да' если документ релевантен запросу и его можно учитывать при генерации ответа.
+    Отвечай 'Нет' если документ не поможет пользователю в решении вопроса или он второстепенный. 
+    Важно не путать пользователя лишними инструкциями поэтому определяй осторожно.
+    
+    Текущий вопрос пользователя:
+    
+    {user_message}
+    
+    Документ на оценку:
+    
+    {doc_check}
+    
+    Ответ:"""
+    prompt = PromptTemplate.from_template(prompt_template)
+    bound = prompt | llm_light | StrOutputParser()
+    for doc in state["rel_docs"]:
+        response = await bound.ainvoke({
+            "user_message":state["user_message"],
+            "doc_check":doc.values()["text"]
+        })
+        if response.replace("'", "").lower() == "нет" or response.replace("'", "").lower().endswith("нет"):
+            continue
+        else:
+            new_rel_docs.append(doc)
+    if len(new_rel_docs) == 0:
+        return {"rewrite":True, "rel_docs":[], "retries":state['retries'] + 1}
+    else:
+        return {"rewrite":False, "rel_docs":new_rel_docs}
+
+contact_message = """Ответ на ваш вопрос не найден среди документов руководства пользователя. Если Вам требуется квалифицированная помощь, позвоните на телефон «горячей линии поддержки», напишите письмо или воспользуйтесь формой регистрации заявки на сайте. 
+КОНТАКТНАЯ ИНФОРМАЦИЯ
+Техническая поддержка
++7 (495) 258-06-36
+info@lense.ru
+lense.ru
+"""
+
+def route_docs(state:State) -> Literal["rewrite_query", "no_docs", "generate"]:
+    if state["retries"] >= 2:
+        return "no_docs"
+    elif state["rewrite"]:
+        return "rewrite_query"
+    else:
+        return "generate"
+
+
+async def rewrite_query(state:State) -> State:
+    prompt_template = """Ты - оператор чат бота, помощника пользователя по сайту Сила. Чат бот проводит поиск релевантных документов из руководства пользователя для ответа на вопрос.
+    Прошлый поиск не удался, поэтому твоя задача перефразировать и изменить запрос к векторной базе данных привел к правильным результатом.
+    Твой ответ должен быть строкой, которая упоминает нужные компоненты или действия на сайте. Перефразируй запрос пользователя более формально, чтобы по ключевым словам и смыслу запроса нашшлись нужные документы.
+    Краткая выжимка из руководства пользователя:
+    
+    {summary}
+    
+    Сообщение пользователя:
+    
+    {user_message}
+    
+    Неудавшийся запрос:
+
+    {last_query}
+
+    Ответ:"""
+    prompt = PromptTemplate.from_template(prompt_template)
+    bound = prompt | llm_light | StrOutputParser()
+    with open("index_summary.txt", "r") as f:
+        index = f.read()
+    return {"db_query": await bound.ainvoke({"summary": index, "user_message":state['user_message'], "last_query":state["db_query"]})}
+
+
+def no_docs(state:State) -> State:
+    return {"answer":contact_message}
+
+async def generate(state:State)-> State:
+    prompt_template = """
+    Ты - чат бот, задача которого помочь пользователю в использовании платформы Сила. Для ответа будет предоставлена история чата, текущий вопрос пользователя, и несколько релевантных документов из руководства пользователя.
+    Твоя задача использовать полученный контекст для ответа на вопрос пользователя. Самое главное не запутать его, но дать нужный совет сославшись на документацию.
+    Можешь упомянуть картинки из текста, или помочь пользователю с навигацией или если проблема не решается, то направить его в тех поддержку.
+    Шаблон сообщения для направления пользователя в тех поддержку при возникших трудностях:
+    {contact_message}
+
+    Документы руководства пользователя связанные с запросом.
+
+    {rel_docs}
+
+    Последние сообщения пользователя:
+
+    {user_context}
+
+    Текущий вопрос пользователя
+
+    {user_message}
+
+    Ответ:"""
+    prompt = PromptTemplate.from_template(prompt_template)
+    bound = prompt | llm_pro | StrOutputParser()
+    response:str = await bound.ainvoke({
+        "contact_message":contact_message,
+        "rel_docs":"\n\n".join([el.values()[0]["text"] for el in state['rel_docs']]),
+        "user_context":"\n".join([f"{el[0]}: {el[1]}" for el in state["last_messages"]]),
+        "user_message":state["user_message"]
+    })
+    return {"answer":response}
+
+async def score_answer(state:State) -> State:
+    prompt_template = """
+    Ты - оператор чат бота, задача которого отвечать на вопросы пользователей связанные с руководством приложения. Ты должен оценить сгенерированный чат ботом ответ.
+    Тебе будет дан текущий запрос пользователя, релевантные документы и ответ чат бота. Ты должен вернуть ответ строго одним словом, либо 'Да' либо 'Нет'.
+    Напиши 'Да' если текущий ответ удовлетворительный и сможет помочь пользователю с решением проблемы и дает нужные инструкции и 'Нет' если текущий вопрос пользователя остался не решенным.
+    Релевантные документы из руководства пользователя:
+
+    {rel_docs}
+
+    Последние сообщения пользователя:
+
+    {user_context}
+
+    Текущий вопрос пользователя
+
+    {user_message}
+
+    Ответ чат бота на оценку:
+
+    {answer}
+
+    Твоя оценка:
+    """
+    prompt = PromptTemplate.from_template(prompt_template)
+    bound = prompt | llm_light | StrOutputParser()
+    response:str = await bound.ainvoke({
+        "rel_docs":"\n\n".join([el.values()[0]["text"] for el in state['rel_docs']]),
+        "user_context":"\n".join([f"{el[0]}: {el[1]}" for el in state["last_messages"]]),
+        "user_message":state["user_message"],
+        "answer":state["answer"]
+    })
+    if response.replace("'", "").lower() == "нет" or response.replace("'", "").lower().endswith("нет"):
+        return {"rewrite":True, "answer":contact_message, "rel_docs":[],"retries":state["retries"] + 1}
+    else:
+        return {"rewrite":False}
+
+def route_answer(state:State) -> Literal["rewrite_query", "__end__"]:
+    if state["rewrite"]:
+        return "rewrite_query"
+    return END
+
+graph.add_node(classify_index)
+graph.add_node(get_relevant_docs)
+graph.add_node(score_docs)
+graph.add_node(rewrite_query)
+graph.add_node(no_docs)
+graph.add_node(generate)
+graph.add_node(score_answer)
+graph.set_entry_point("classify_index")
+graph.add_conditional_edges("classify_index", route_index)
+graph.add_edge("get_relevant_docs", "score_docs")
+graph.add_conditional_edges("score_docs", route_docs)
+graph.add_edge("rewrite_query", "get_relevant_docs")
+graph.add_edge("generate", "score_answer")
+graph.set_finish_point("no_docs")
+graph.add_conditional_edges("score_answer", route_answer)
+worker = graph.compile()
+
+app/logger.py
+
+import logging
+from logging.handlers import RotatingFileHandler
+import os
+
+def setup_logger(name):
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+
+    # Создаем директорию для логов, если она не существует
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+
+    # Настраиваем RotatingFileHandler
+    file_handler = RotatingFileHandler(
+        'logs/app.log', maxBytes=10485760, backupCount=5)
+    file_handler.setLevel(logging.INFO)
+
+    # Настраиваем ConsoleHandler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+
+    # Создаем форматтер и добавляем его к обработчикам
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+
+    # Добавляем обработчики к логгеру
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    return logger
+
+
+app/main.py
+
+
+
+app/photo_indexes.py
+
+import os
+
+# Полная структура заголовков с ключами в кавычках
+titles = {
+    "1": "О системе",
+    "1.1": "Наименование и обозначение системы",
+    "1.2": "Область применения системы",
+    "1.3": "Основные функции системы",
+    "1.4": "Роли пользователей",
+    "2": "Работа в системе",
+    "1.5": "Запуск системы",
+    "1.6": "Авторизация",
+    "1.7": "Просмотр информации о системе",
+    "1.8": "Настройка шлюзов автоматизации",
+    "1.8.1": "Добавление шлюза",
+    "1.8.2": "Статусы шлюза",
+    "1.8.3": "Состояния шлюза",
+    "1.8.4": "Удаление шлюза",
+    "1.9": "Управление учетными записями",
+    "1.9.1": "Создание УЗ",
+    "1.9.2": "Редактирование УЗ",
+    "1.9.3": "Удаление УЗ",
+    "1.10": "Иерархия моделей ПО",
+    "1.10.1": "Уровни моделей ПО",
+    "1.10.2": "Создание модели ПО",
+    "1.10.3": "Добавление связей между моделями ПО",
+    "1.10.4": "Переименование модели ПО",
+    "1.10.5": "Редактирование свойств модели ПО",
+    "1.10.6": "Редактирование свойств применимости модели ПО",
+    "1.10.7": "Удаление связей между моделями ПО",
+    "1.10.8": "Удаление модели ПО",
+    "1.11": "Управление шаблонами",
+    "1.11.1": "Выбор актуальной версии шаблона",
+    "1.11.2": "Загрузка и обновление шаблона",
+    "1.11.3": "Создание шаблона",
+    "1.11.4": "Выгрузка шаблонов",
+    "1.12": "Управление профилями",
+    "1.12.1": "Создание профиля из списка профилей",
+    "1.12.2": "Копирование профиля",
+    "1.12.3": "Создание профиля через перечень шаблонов",
+    "1.12.4": "Редактирование требований профиля",
+    "1.12.5": "Переименование профиля",
+    "1.12.6": "Смена применимости профиля",
+    "1.12.7": "Активация профиля",
+    "1.12.8": "Архивация профиля",
+    "1.12.9": "Удаление профиля",
+    "1.13": "Управление требованиями",
+    "1.13.1": "Добавление раздела",
+    "1.13.2": "Переименование раздела",
+    "1.13.3": "Перемещение раздела",
+    "1.13.4": "Удаление раздела",
+    "1.13.5": "Создание требования",
+    "1.13.6": "Добавление сведений",
+    "1.13.7": "Добавление применимости",
+    "1.13.8": "Добавление данных сбора конфигурации",
+    "1.13.9": "Добавление данных анализа конфигурации",
+    "1.13.10": "Добавление данных исправления конфигурации",
+    "1.13.11": "Добавление требования из Единого реестра требований",
+    "1.13.12": "Переименование требования",
+    "1.13.13": "Редактирование данных требования",
+    "1.13.14": "Смена применимости требования",
+    "1.13.15": "Использование отметки «Черновик»",
+    "1.13.16": "Удаление требования",
+    "1.14": "Управление ресурсами",
+    "1.14.1": "Добавление раздела",
+    "1.14.2": "Переименование раздела",
+    "1.14.3": "Перемещение раздела",
+    "1.14.4": "Удаление раздела",
+    "1.14.5": "Создание online-ресурса",
+    "1.14.6": "Создание offline-ресурса",
+    "1.14.7": "Переименование ресурса",
+    "1.14.8": "Перемещение ресурса",
+    "1.14.9": "Редактирование данных ресурса",
+    "1.14.10": "Редактирование программной топологии",
+    "1.14.11": "Добавление экземпляра ПО",
+    "1.14.11.1": "Добавление экземпляра уровеня 1",
+    "1.14.11.2": "Добавление экземпляра уровеня 2",
+    "1.14.12": "Редактирование экземпляра ПО",
+    "1.14.13": "Импорт и экспорт ресурсов",
+    "1.14.13.1": "Содержимое файла экспорта",
+    "1.14.13.2": "Импорт ресурса",
+    "1.14.13.3": "Экспорт ресурса",
+    "1.14.14": "Удаление экземпляра ПО",
+    "1.14.15": "Удаление ресурса",
+    "1.15": "Аудит конфигурации ПО",
+    "1.15.1": "Создание области аудита",
+    "1.15.2": "Редактирование области аудита",
+    "1.15.3": "Задачи на аудит",
+    "1.15.4": "Запуск задачи",
+    "1.15.5": "Отмена задачи",
+    "1.15.6": "Просмотр отчета аудита",
+    "1.15.6.1": "Просмотр отчета",
+    "1.15.6.2": "Группировка подзадач",
+    "1.15.6.3": "Скачивание отчета",
+    "1.15.7": "Просмотр протокола аудита",
+    "1.15.7.1": "Просмотр протокола",
+    "1.15.7.2": "Статистика проверок",
+    "1.15.7.3": "Список требований",
+    "1.15.7.4": "Смена отображения требований",
+    "1.15.7.5": "Фильтрация требований",
+    "1.15.8": "Завершение протокола аудита",
+    "1.15.8.1": "Завершение сбора конфигурации",
+    "1.15.8.2": "Завершение анализа конфигурации",
+    "1.15.9": "Удаление области аудита",
+    "3": "Дополнительная информация",
+    "1.16": "Сообщения об ошибках",
+}
+
+# Путь к папке images
+images_folder = "images"
+
+# Получаем список всех файлов в папке images
+all_files = os.listdir(images_folder)
+print(all_files)
+
+
+# Функция для проверки, начинается ли имя файла с определенного номера
+def get_files_by_number(number):
+    return [f for f in all_files if f.startswith(str(number)+'_')]
+
+
+# Создаем словарь для хранения названий файлов по заголовкам
+files_by_titles = {}
+
+# Заполняем словарь
+for number in titles:
+    files_by_titles[number] = get_files_by_number(number)
+
+# Выводим результат
+for title_number, files in files_by_titles.items():
+    print(f"Заголовок {title_number}: {titles[title_number]}")
+    print(f"Файлы: {files}")
+
+
+app/schemas/__init__.py
+
+
+
+app/schemas/state.py
+
+from typing import TypedDict, Tuple
+
+class State(TypedDict):
+    user_message:str
+    last_messages:list[Tuple]
+    is_index:bool
+    answer:str
+    rel_docs:list[dict]
+    db_query:str
+    retries:int
+    rewrite:bool
+
+app/services/__init__.py
+
+
+
+app/services/llm.py
+
+from ..config import settings
+from langchain_community.llms import YandexGPT
+
+llm_light = YandexGPT(iam_token=settings.YANDEXGPT_IAM_TOKEN, model_uri=settings.YANDEXGPT_MODEL_URI)
+llm_pro = YandexGPT(iam_token=settings.YANDEXGPT_IAM_TOKEN, model_uri=settings.YANDEXGPT_MAIN_MODEL_URI)
+
+core/__init__.py
+
+
+
+core/config.py
+
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    DATABASE_URL: str
+    DB_ECHO: bool = False
+    POSTGRES_HOST: str
+    POSTGRES_PORT: int
+    POSTGRES_USER: str
+    POSTGRES_PASSWORD: str
+    POSTGRES_DB: str
+    # ... другие настройки ...
+
+    class Config:
+        env_file = "db.env"
+
+settings = Settings()
+
+
+core/models/__init__.py
+
+
+
+core/models/base.py
+
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, declared_attr
+
+class Base(DeclarativeBase):
+    __abstract__ = True
+
+    @declared_attr.directive
+    def __tablename__(cls) -> str:
+        return f"{cls.__name__.lower()}s"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+
+
+core/models/crud.py
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from .user import User
+from .document import Document
+
+async def create_user(session: AsyncSession, user_id: str, thread_id: str):
+    user = User(user_id=user_id, thread_id=thread_id)
+    session.add(user)
+    await session.commit()
+    return user
+
+async def get_user_by_user_id(session: AsyncSession, user_id: str):
+    result = await session.execute(select(User).where(User.user_id == user_id))
+    return result.scalar_one_or_none()
+
+async def create_document(session: AsyncSession, filename: str, content: str, user_id: int):
+    document = Document(filename=filename, content=content, user_id=user_id)
+    session.add(document)
+    await session.commit()
+    return document
+
+async def get_documents_by_user(session: AsyncSession, user_id: str):
+    result = await session.execute(select(Document).where(Document.user_id == user_id))
+    return result.scalars().all()
+
+
+core/models/db_helper.py
+
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    create_async_engine,
+    async_sessionmaker,
+    async_scoped_session,
+)
+from core.config import settings
+from asyncio import current_task
+
+class DatabaseHelper:
+    def __init__(self, url: str, echo: bool = False):
+        self.engine = create_async_engine(url=url, echo=echo)
+        self.session_factory = async_sessionmaker(
+            bind=self.engine,
+            autoflush=False,
+            autocommit=False,
+            expire_on_commit=False,
+        )
+
+    async def get_session(self) -> AsyncSession:
+        async with self.session_factory() as session:
+            yield session
+    
+    def get_scoped_session(self):
+        session = async_scoped_session(
+            session_factory=self.session_factory,
+            scopefunc=current_task,
+        )
+        return session
+
+    async def session_dependency(self) -> AsyncSession:
+        async with self.session_factory() as session:
+            yield session
+            await session.close()
+
+    async def scoped_session_dependency(self) -> AsyncSession:
+        session = self.get_scoped_session()
+        yield session
+        await session.close()
+
+db_helper = DatabaseHelper(url=settings.DATABASE_URL, echo=settings.DB_ECHO)
+
+
+core/models/document.py
+
+# core/models/document.py
+from sqlalchemy.orm import Mapped, mapped_column
+from .base import Base
+
+class Document(Base):
+    filename: Mapped[str]
+    content: Mapped[str]
+    user_id: Mapped[str]
+
+core/models/mixins.py
+
+
+
+core/models/user.py
+
+from sqlalchemy.orm import Mapped, mapped_column
+from .base import Base
+
+class User(Base):
+    user_id: Mapped[str] = mapped_column(unique=True, index=True)
+    thread_id: Mapped[str] = mapped_column(unique=True)
+
+docker-compose.yml
+
+
+
+requirements.txt
+
+python-dotenv
+langchain
+langgraph
+langchain-community
+langchain-postgres
+langchain-core
+langchain-huggingface
+sentence-transformers
+yandexcloud
+python-docx

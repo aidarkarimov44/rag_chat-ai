@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
-    # ... другие настройки ...
+    # Добавьте другие необходимые настройки
 
     class Config:
         env_file = "db.env"

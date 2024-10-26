@@ -8,3 +8,10 @@ langchain-huggingface
 sentence-transformers
 yandexcloud
 python-docx
+pytesseract
+pillow
+fastapi
+uvicorn[standart]
+sqlalchemy[asyncio]
+asyncpg
+aiofiles
