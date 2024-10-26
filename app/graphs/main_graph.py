@@ -4,7 +4,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables.config import RunnableConfig
 from ..schemas.state import State
-from ..services.llm import llm
+from ..services.llm import llm_light, llm_pro
 from ..logger import setup_logger
 from langchain_core.output_parsers import StrOutputParser
 from ..database.vector_store import get_vectorstore
@@ -37,7 +37,7 @@ async def classify_index(state:State) -> State:  # -> Literal["index", "general"
     Ответ:
     """
     prompt = PromptTemplate.from_template(prompt_template)
-    bound = prompt | llm | StrOutputParser()
+    bound = prompt | llm_light | StrOutputParser()
     response:str = await bound.ainvoke({
         "summary":index,
         "user_context":"\n".join([el[1] for el in state["last_messages"] if el[0] == "user"]),
@@ -60,7 +60,7 @@ def route_index(state:State) -> Literal["get_relevant_docs", "__end__"]:
 
 async def get_relevant_docs(state:State) -> State:
     vectorstore = get_vectorstore()
-    return {'rel_docs':[{el.metadata["chapter"]:{"text":el.page_content, "images":el.metadata["image_paths"]}} for el in await vectorstore.asimilarity_search(query=state["db_query"])]}
+    return {'rel_docs':[{el.metadata["chapter"]:{"text":el.metadata["content"], "images":el.metadata["image_paths"]}} for el in await vectorstore.asimilarity_search(query=state["db_query"])]}
 
 async def score_docs(state:State)->State:
     new_rel_docs=[]
@@ -81,7 +81,7 @@ async def score_docs(state:State)->State:
     
     Ответ:"""
     prompt = PromptTemplate.from_template(prompt_template)
-    bound = prompt | llm | StrOutputParser()
+    bound = prompt | llm_light | StrOutputParser()
     for doc in state["rel_docs"]:
         response = await bound.ainvoke({
             "user_message":state["user_message"],
@@ -131,7 +131,7 @@ async def rewrite_query(state:State) -> State:
 
     Ответ:"""
     prompt = PromptTemplate.from_template(prompt_template)
-    bound = prompt | llm | StrOutputParser()
+    bound = prompt | llm_light | StrOutputParser()
     with open("index_summary.txt", "r") as f:
         index = f.read()
     return {"db_query": await bound.ainvoke({"summary": index, "user_message":state['user_message'], "last_query":state["db_query"]})}
@@ -162,7 +162,7 @@ async def generate(state:State)-> State:
 
     Ответ:"""
     prompt = PromptTemplate.from_template(prompt_template)
-    bound = prompt | llm | StrOutputParser()
+    bound = prompt | llm_pro | StrOutputParser()
     response:str = await bound.ainvoke({
         "contact_message":contact_message,
         "rel_docs":"\n\n".join([el.values()[0]["text"] for el in state['rel_docs']]),
@@ -195,7 +195,7 @@ async def score_answer(state:State) -> State:
     Твоя оценка:
     """
     prompt = PromptTemplate.from_template(prompt_template)
-    bound = prompt | llm | StrOutputParser()
+    bound = prompt | llm_light | StrOutputParser()
     response:str = await bound.ainvoke({
         "rel_docs":"\n\n".join([el.values()[0]["text"] for el in state['rel_docs']]),
         "user_context":"\n".join([f"{el[0]}: {el[1]}" for el in state["last_messages"]]),

@@ -7,3 +7,4 @@ langchain-core
 langchain-huggingface
 sentence-transformers
 yandexcloud
+python-docx
