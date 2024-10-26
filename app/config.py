@@ -9,8 +9,8 @@ class Settings:
     YANDEXGPT_MAIN_MODEL_URI:str=os.getenv("YANDEX_MAIN_MODEL_URI")
     EMBEDDINGS_MODEL:str=os.getenv("EMBEDDINGS_MODEL")
     DEVICE:str=os.getenv("DEVICE")
-    PG_CONNECTION:str=os.getenv("PG_CONNETCTION")
+    PG_CONNECTION:str=os.getenv("PG_CONNECTION")
     PG_COLLECTION_NAME:str=os.getenv("PG_COLLECTION_NAME")
-
+    GIGACHAT_CREDENTIALS:str=os.getenv("GIGACHAT_CREDENTIALS")
 
 settings = Settings()

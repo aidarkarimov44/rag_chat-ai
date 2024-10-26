@@ -1,11 +1,12 @@
 # app/api/endpoints.py
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
+from typing import List, Optional
 import uuid
 import aiofiles
 import os
-from ...core.models.crud import (
+from core.models.crud import (
     create_user,
     get_user_by_user_id,
     create_chat,
@@ -13,11 +14,11 @@ from ...core.models.crud import (
     get_last_five_chats_with_last_message,
     get_last_n_messages,
 )
-from ...core.models.db_helper import db_helper
-from ...core.models.chat import Chat
-from ..services.llm import worker  # Предполагается, что worker доступен из llm.py
+from core.models.db_helper import db_helper
+from core.models.chat import Chat
+from ..graphs.main_graph import worker  # Предполагается, что worker доступен из llm.py
 from ..schemas.state import State
-from ..schemas.chat import ChatHistoryResponse, ChatWithLastMessageResponse
+from ..schemas.chat import ChatWithLastMessageResponse
 from ..schemas.message import SendMessageResponse, SendMessageRequest, PhotoInfo
 from ..schemas.user import UserCreateResponse
 from PIL import Image
@@ -82,10 +83,15 @@ async def send_message(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Проверка существования чата
+    # Попытка получить чат
     chat = await session.get(Chat, chat_id)
+    
+    # Если чат не найден, создаем новый чат для пользователя
     if not chat:
-        raise HTTPException(status_code=404, detail="Chat not found")
+        try:
+            chat = await create_chat(session, user)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Ошибка создания нового чата: {e}")
     
     # Обработка отправленных изображений (Base64)
     image_texts = []
@@ -143,11 +149,11 @@ async def send_message(
     }
     
     # Вызов worker для обработки состояния
-    try:
-        response_state = await worker.ainvoke(initial_state)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка при вызове worker: {e}")
-    
+    # try:
+    #     response_state = await worker.ainvoke(initial_state)
+    # except Exception as e:
+    #     raise HTTPException(status_code=500, detail=f"Ошибка при вызове worker: {e}")
+    response_state = await worker.ainvoke(initial_state)
     # Получение ответа бота и его сохранение
     bot_answer = response_state.get("answer", "")
     try:

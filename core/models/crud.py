@@ -6,7 +6,7 @@ from .user import User
 from .chat import Chat
 from .message import Message
 
-from ...app.schemas.chat import ChatWithLastMessageResponse, LastMessageSchema
+from app.schemas.chat import ChatWithLastMessageResponse, LastMessageSchema
 
 async def create_user(session: AsyncSession, user_id: str) -> User:
     user = User(user_id=user_id)

@@ -16,3 +16,4 @@ aiofiles
 pydantic-settings
 alembic
 psycopg2-binary
+gigachat
