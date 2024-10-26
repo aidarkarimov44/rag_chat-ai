@@ -1,4 +1,4 @@
-from typing import Dict, Any, Literal
+from typing import Dict, Any, Literal, TypedDict
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.prompts import PromptTemplate
@@ -134,10 +134,97 @@ async def rewrite_query(state:State) -> State:
     bound = prompt | llm | StrOutputParser()
     with open("index_summary.txt", "r") as f:
         index = f.read()
-    return {await bound.ainvoke({"summary": index, "user_message":state['user_message'], "last_query":state["db_query"]})}
+    return {"db_query": await bound.ainvoke({"summary": index, "user_message":state['user_message'], "last_query":state["db_query"]})}
 
 
 def no_docs(state:State) -> State:
     return {"answer":contact_message}
 
+async def generate(state:State)-> State:
+    prompt_template = """
+    Ты - чат бот, задача которого помочь пользователю в использовании платформы Сила. Для ответа будет предоставлена история чата, текущий вопрос пользователя, и несколько релевантных документов из руководства пользователя.
+    Твоя задача использовать полученный контекст для ответа на вопрос пользователя. Самое главное не запутать его, но дать нужный совет сославшись на документацию.
+    Можешь упомянуть картинки из текста, или помочь пользователю с навигацией или если проблема не решается, то направить его в тех поддержку.
+    Шаблон сообщения для направления пользователя в тех поддержку при возникших трудностях:
+    {contact_message}
 
+    Документы руководства пользователя связанные с запросом.
+
+    {rel_docs}
+
+    Последние сообщения пользователя:
+
+    {user_context}
+
+    Текущий вопрос пользователя
+
+    {user_message}
+
+    Ответ:"""
+    prompt = PromptTemplate.from_template(prompt_template)
+    bound = prompt | llm | StrOutputParser()
+    response:str = await bound.ainvoke({
+        "contact_message":contact_message,
+        "rel_docs":"\n\n".join([el.values()[0]["text"] for el in state['rel_docs']]),
+        "user_context":"\n".join([f"{el[0]}: {el[1]}" for el in state["last_messages"]]),
+        "user_message":state["user_message"]
+    })
+    return {"answer":response}
+
+async def score_answer(state:State) -> State:
+    prompt_template = """
+    Ты - оператор чат бота, задача которого отвечать на вопросы пользователей связанные с руководством приложения. Ты должен оценить сгенерированный чат ботом ответ.
+    Тебе будет дан текущий запрос пользователя, релевантные документы и ответ чат бота. Ты должен вернуть ответ строго одним словом, либо 'Да' либо 'Нет'.
+    Напиши 'Да' если текущий ответ удовлетворительный и сможет помочь пользователю с решением проблемы и дает нужные инструкции и 'Нет' если текущий вопрос пользователя остался не решенным.
+    Релевантные документы из руководства пользователя:
+
+    {rel_docs}
+
+    Последние сообщения пользователя:
+
+    {user_context}
+
+    Текущий вопрос пользователя
+
+    {user_message}
+
+    Ответ чат бота на оценку:
+
+    {answer}
+
+    Твоя оценка:
+    """
+    prompt = PromptTemplate.from_template(prompt_template)
+    bound = prompt | llm | StrOutputParser()
+    response:str = await bound.ainvoke({
+        "rel_docs":"\n\n".join([el.values()[0]["text"] for el in state['rel_docs']]),
+        "user_context":"\n".join([f"{el[0]}: {el[1]}" for el in state["last_messages"]]),
+        "user_message":state["user_message"],
+        "answer":state["answer"]
+    })
+    if response.replace("'", "").lower() == "нет" or response.replace("'", "").lower().endswith("нет"):
+        return {"rewrite":True, "answer":contact_message, "rel_docs":[],"retries":state["retries"] + 1}
+    else:
+        return {"rewrite":False}
+
+def route_answer(state:State) -> Literal["rewrite_query", "__end__"]:
+    if state["rewrite"]:
+        return "rewrite_query"
+    return END
+
+graph.add_node(classify_index)
+graph.add_node(get_relevant_docs)
+graph.add_node(score_docs)
+graph.add_node(rewrite_query)
+graph.add_node(no_docs)
+graph.add_node(generate)
+graph.add_node(score_answer)
+graph.set_entry_point("classify_index")
+graph.add_conditional_edges("classify_index", route_index)
+graph.add_edge("get_relevant_docs", "score_docs")
+graph.add_conditional_edges("score_docs", route_docs)
+graph.add_edge("rewrite_query", "get_relevant_docs")
+graph.add_edge("generate", "score_answer")
+graph.set_finish_point("no_docs")
+graph.add_conditional_edges("score_answer", route_answer)
+worker = graph.compile()
