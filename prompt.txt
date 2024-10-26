@@ -17,7 +17,10 @@
 │   ├── photo_indexes.py
 │   ├── schemas/
 │   │   ├── __init__.py
-│   │   └── state.py
+│   │   ├── chat.py
+│   │   ├── message.py
+│   │   ├── state.py
+│   │   └── user.py
 │   └── services/
 │       ├── __init__.py
 │       └── llm.py
@@ -27,10 +30,10 @@
 │   └── models/
 │       ├── __init__.py
 │       ├── base.py
+│       ├── chat.py
 │       ├── crud.py
 │       ├── db_helper.py
-│       ├── document.py
-│       ├── mixins.py
+│       ├── message.py
 │       └── user.py
 ├── docker-compose.yml
 ├── images/
@@ -50,6 +53,198 @@ app/api/__init__.py
 
 app/api/endpoints.py
 
+# app/api/endpoints.py
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import List
+import uuid
+import aiofiles
+import os
+from ...core.models.crud import (
+    create_user,
+    get_user_by_user_id,
+    create_chat,
+    create_message,
+    get_last_five_chats_with_last_message,
+    get_last_n_messages,
+)
+from ...core.models.db_helper import db_helper
+from ...core.models.chat import Chat
+from ..services.llm import worker  # Предполагается, что worker доступен из llm.py
+from ..schemas.state import State
+from ..schemas.chat import ChatHistoryResponse, ChatWithLastMessageResponse
+from ..schemas.message import SendMessageResponse, SendMessageRequest, PhotoInfo
+from ..schemas.user import UserCreateResponse
+from PIL import Image
+import pytesseract
+from io import BytesIO
+import base64
+from datetime import datetime
+
+router = APIRouter()
+
+@router.post("/user", response_model=UserCreateResponse)
+async def new_user(session: AsyncSession = Depends(db_helper.session_dependency)):
+    """
+    Создает нового пользователя с уникальным user_id.
+    """
+    try:
+        # Генерация нового UUID
+        new_uuid = str(uuid.uuid4())
+        new_user = await create_user(session=session, user_id=new_uuid)
+        return UserCreateResponse(user_id=new_user.user_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/last/{user_id}", response_model=List[ChatWithLastMessageResponse])
+async def get_last_five_chat_by_id(
+        user_id: str,
+        session: AsyncSession = Depends(db_helper.session_dependency)
+):
+    """
+    Получает последние пять чатов пользователя идентификатора user_id.
+    """
+    try:
+        # Проверяем существование пользователя
+        user = await get_user_by_user_id(session, user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Получаем последние пять чатов с последними сообщениями
+        chats_with_messages = await get_last_five_chats_with_last_message(session, user_id, limit=5)
+        return chats_with_messages
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/send_message", response_model=SendMessageResponse)
+async def send_message(
+    request: SendMessageRequest,
+    session: AsyncSession = Depends(db_helper.session_dependency)
+):
+    """
+    Отправляет сообщение пользователем в чат и возвращает ответ от бота.
+    Поддерживает отправку изображений в формате Base64.
+    """
+    user_id = request.user_id
+    chat_id = request.chat_id
+    message = request.message
+    images = request.images
+
+    # Проверка существования пользователя
+    user = await get_user_by_user_id(session, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Проверка существования чата
+    chat = await session.get(Chat, chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    
+    # Обработка отправленных изображений (Base64)
+    image_texts = []
+    if images:
+        for img in images:
+            try:
+                # Декодирование Base64 в байты
+                image_data = base64.b64decode(img.data)
+                
+                # Сохранение изображения на сервер
+                file_path = os.path.join("uploads", img.filename)
+                os.makedirs("uploads", exist_ok=True)
+                async with aiofiles.open(file_path, 'wb') as out_file:
+                    await out_file.write(image_data)
+                
+                # Конвертация изображения в текст с помощью OCR
+                img_pil = Image.open(BytesIO(image_data))
+                text = pytesseract.image_to_string(img_pil, lang='rus')  # Предполагаем, что текст на русском
+                image_texts.append(text)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Ошибка обработки изображения {img.filename}: {e}")
+
+    # Комбинирование текста сообщения и текста из изображений
+    if image_texts:
+        combined_message = f"{message}\n" + "\n".join(image_texts)
+    else:
+        combined_message = message
+    
+    # Сохранение сообщения пользователя в базе данных
+    try:
+        await create_message(session, chat, "user", combined_message)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения сообщения: {e}")
+    
+    # Получение последних 5 сообщений из чата для контекста
+    try:
+        last_messages_objs = await get_last_n_messages(session, chat, limit=5)
+        # Формирование списка кортежей (sender, content)
+        last_messages = [(msg.sender, msg.content) for msg in last_messages_objs]
+        # Добавление текущего сообщения пользователя для формирования контекста
+        last_messages.append(("user", combined_message))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка получения истории чата: {e}")
+    
+    # Инициализация состояния
+    initial_state: State = {
+        "user_message": combined_message,
+        "last_messages": last_messages,
+        "is_index": False,
+        "answer": "",
+        "rel_docs": [],
+        "db_query": "",
+        "retries": 0,
+        "rewrite": False
+    }
+    
+    # Вызов worker для обработки состояния
+    try:
+        response_state = await worker.ainvoke(initial_state)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка при вызове worker: {e}")
+    
+    # Получение ответа бота и его сохранение
+    bot_answer = response_state.get("answer", "")
+    try:
+        await create_message(session, chat, "bot", bot_answer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения ответа бота: {e}")
+    
+    # Обработка rel_docs для отправки фотографий
+    photos_info = []
+    if response_state.get("rel_docs"):
+        for doc in response_state["rel_docs"]:
+            for chapter, details in doc.items():
+                content = details.get("content", "")
+                image_paths = details.get("paths", [])
+                for path in image_paths:
+                    # Извлечение номера главы и номера рисунка из имени файла
+                    filename = os.path.basename(path)
+                    parts = filename.split('_')
+                    if len(parts) < 2:
+                        continue  # Неверный формат имени файла
+                    chapter_num = parts[0]
+                    image_num_part = parts[1].split('.')[0]  # Пример: 'image1.png' -> 'image1'
+                    image_num = ''.join(filter(str.isdigit, image_num_part))  # Извлекаем только цифры
+                    
+                    # Чтение изображения и кодирование в Base64
+                    try:
+                        with open(path, "rb") as image_file:
+                            encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+                    except Exception as e:
+                        raise HTTPException(status_code=500, detail=f"Ошибка чтения изображения {path}: {e}")
+                    
+                    photos_info.append(PhotoInfo(
+                        chapter=chapter_num,
+                        image_number=image_num,
+                        base64_data=encoded_string
+                    ))
+    
+    return SendMessageResponse(
+        user_message=combined_message,
+        bot_answer=bot_answer,
+        photos=photos_info
+    )
 
 
 app/chunks_creating.py
@@ -144,6 +339,11 @@ load_dotenv()
 class Settings:
     YANDEXGPT_IAM_TOKEN:str=os.getenv("YANDEXGPT_IAM_TOKEN")
     YANDEXGPT_MODEL_URI:str=os.getenv("YANDEXGPT_MODEL_URI")
+    YANDEXGPT_MAIN_MODEL_URI:str=os.getenv("YANDEX_MAIN_MODEL_URI")
+    EMBEDDINGS_MODEL:str=os.getenv("EMBEDDINGS_MODEL")
+    DEVICE:str=os.getenv("DEVICE")
+    PG_CONNECTION:str=os.getenv("PG_CONNETCTION")
+    PG_COLLECTION_NAME:str=os.getenv("PG_COLLECTION_NAME")
 
 
 settings = Settings()
@@ -155,17 +355,65 @@ app/database/__init__.py
 app/database/vector_store.py
 
 from functools import lru_cache
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_postgres import PGVector
 from ..config import settings
 from ..chunks_creating import documents
 
+from langchain.embeddings.base import Embeddings
+import time
+import requests
+from typing import Any, List, Mapping, Optional
+from langchain.callbacks.manager import CallbackManagerForLLMRun
+import requests
+import langchain
+
+class YandexGPTEmbeddings(Embeddings):
+
+    def __init__(self, iam_token=None, api_key=None, folder_id=None, sleep_interval=1):
+        self.iam_token = iam_token
+        self.sleep_interval = sleep_interval
+        self.api_key = api_key
+        self.folder_id = folder_id
+        if self.iam_token:
+            self.headers = {'Authorization': 'Bearer ' + self.iam_token}
+        if self.api_key:
+            self.headers = {'Authorization': 'Api-key ' + self.api_key,
+                             "x-folder-id" : self.folder_id }
+                
+    def embed_document(self, text):
+        j = {
+          "model" : "general:embedding",
+          "embedding_type" : "EMBEDDING_TYPE_DOCUMENT",
+          "text": text
+        }
+        res = requests.post("https://llm.api.cloud.yandex.net/llm/v1alpha/embedding",
+                            json=j, headers=self.headers)
+        vec = res.json()['embedding']
+        return vec
+
+    def embed_documents(self, texts, chunk_size = 0):
+        res = []
+        for x in texts:
+            res.append(self.embed_document(x))
+            time.sleep(self.sleep_interval)
+        return res
+        
+    def embed_query(self, text):
+        j = {
+          "model" : "general:embedding",
+          "embedding_type" : "EMBEDDING_TYPE_QUERY",
+          "text": text
+        }
+        res = requests.post("https://llm.api.cloud.yandex.net/llm/v1alpha/embedding",
+                            json=j,headers=self.headers)
+        vec = res.json()['embedding']
+        time.sleep(self.sleep_interval)
+        return vec
+    
+
 @lru_cache
 def get_vectorstore() -> PGVector:
-    embeddings = HuggingFaceEmbeddings(
-        model_name=settings.EMBEDDINGS_MODEL,
-        model_kwargs={"device": settings.DEVICE}
-    )
+    embeddings = YandexGPTEmbeddings(iam_token=settings.YANDEXGPT_IAM_TOKEN)
     vectorstore = PGVector(
         embeddings=embeddings,
         collection_name=settings.PG_COLLECTION_NAME,
@@ -595,6 +843,59 @@ app/schemas/__init__.py
 
 
 
+app/schemas/chat.py
+
+# app/schemas/chat.py
+from pydantic import BaseModel
+from datetime import datetime
+from typing import List
+
+class LastMessageSchema(BaseModel):
+    sender: str
+    content: str
+    timestamp: datetime
+
+class ChatWithLastMessageResponse(BaseModel):
+    chat_id: int
+    last_message: LastMessageSchema
+
+
+app/schemas/message.py
+
+# app/schemas/message.py
+from pydantic import BaseModel, Field, validator
+from typing import List, Dict, Optional
+import base64
+
+class MessageImage(BaseModel):
+    filename: str
+    data: str  # Base64-encoded image data
+
+    @validator('data')
+    def validate_base64(cls, v):
+        try:
+            base64.b64decode(v)
+        except Exception:
+            raise ValueError('Invalid base64 encoding')
+        return v
+
+class SendMessageRequest(BaseModel):
+    user_id: str
+    chat_id: int
+    message: str
+    images: Optional[List[MessageImage]] = None  # Опционально список изображений
+
+class PhotoInfo(BaseModel):
+    chapter: str
+    image_number: str
+    base64_data: str  # Base64-encoded image data
+
+class SendMessageResponse(BaseModel):
+    user_message: str
+    bot_answer: str
+    photos: List[PhotoInfo]
+
+
 app/schemas/state.py
 
 from typing import TypedDict, Tuple
@@ -608,6 +909,15 @@ class State(TypedDict):
     db_query:str
     retries:int
     rewrite:bool
+
+app/schemas/user.py
+
+# app/schemas/user.py
+from pydantic import BaseModel
+
+class UserCreateResponse(BaseModel):
+    user_id: str
+
 
 app/services/__init__.py
 
@@ -637,7 +947,7 @@ class Settings(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
-    # ... другие настройки ...
+    # Добавьте другие необходимые настройки
 
     class Config:
         env_file = "db.env"
@@ -647,6 +957,12 @@ settings = Settings()
 
 core/models/__init__.py
 
+# core/models/__init__.py
+from .user import User
+from .chat import Chat
+from .message import Message
+
+__all__ = ["User", "Chat", "Message"]
 
 
 core/models/base.py
@@ -663,32 +979,114 @@ class Base(DeclarativeBase):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
 
 
+core/models/chat.py
+
+# core/models/chat.py
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from .base import Base
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .user import User
+    from .message import Message
+
+class Chat(Base):
+    __tablename__ = "chats"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column()
+    user: Mapped["User"] = relationship("User", back_populates="chats")
+    messages: Mapped[list["Message"]] = relationship("Message", back_populates="chat")
+
+
 core/models/crud.py
 
+# core/models/crud.py
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, desc, func
+from typing import List, Optional
 from .user import User
-from .document import Document
+from .chat import Chat
+from .message import Message
 
-async def create_user(session: AsyncSession, user_id: str, thread_id: str):
-    user = User(user_id=user_id, thread_id=thread_id)
+from ...app.schemas.chat import ChatWithLastMessageResponse, LastMessageSchema
+
+async def create_user(session: AsyncSession, user_id: str) -> User:
+    user = User(user_id=user_id)
     session.add(user)
     await session.commit()
+    await session.refresh(user)
     return user
 
-async def get_user_by_user_id(session: AsyncSession, user_id: str):
+async def get_user_by_user_id(session: AsyncSession, user_id: str) -> Optional[User]:
     result = await session.execute(select(User).where(User.user_id == user_id))
     return result.scalar_one_or_none()
 
-async def create_document(session: AsyncSession, filename: str, content: str, user_id: int):
-    document = Document(filename=filename, content=content, user_id=user_id)
-    session.add(document)
+async def create_chat(session: AsyncSession, user: User) -> Chat:
+    chat = Chat(user_id=user.id)
+    session.add(chat)
     await session.commit()
-    return document
+    await session.refresh(chat)
+    return chat
 
-async def get_documents_by_user(session: AsyncSession, user_id: str):
-    result = await session.execute(select(Document).where(Document.user_id == user_id))
-    return result.scalars().all()
+async def create_message(session: AsyncSession, chat: Chat, sender: str, content: str) -> Message:
+    message = Message(chat_id=chat.id, sender=sender, content=content)
+    session.add(message)
+    await session.commit()
+    await session.refresh(message)
+    return message
+
+async def get_last_five_chats_with_last_message(session: AsyncSession, user_id: str, limit: int = 5) -> List[ChatWithLastMessageResponse]:
+    """
+    Получает последние пять чатов пользователя вместе с последним сообщением в каждом чате.
+    """
+    # Подзапрос для получения времени последнего сообщения в каждом чате
+    subquery = (
+        select(
+            Message.chat_id,
+            func.max(Message.timestamp).label("last_message_time")
+        )
+        .join(Chat, Chat.id == Message.chat_id)
+        .join(User, User.id == Chat.user_id)
+        .where(User.user_id == user_id)
+        .group_by(Message.chat_id)
+        .subquery()
+    )
+    
+    # Основной запрос для получения чатов и их последних сообщений
+    stmt = (
+        select(Chat, Message)
+        .join(subquery, Chat.id == subquery.c.chat_id)
+        .join(Message, (Message.chat_id == Chat.id) & (Message.timestamp == subquery.c.last_message_time))
+        .order_by(desc(subquery.c.last_message_time))
+        .limit(limit)
+    )
+    
+    result = await session.execute(stmt)
+    rows = result.fetchall()
+    
+    chats_with_last_messages = []
+    for chat, message in rows:
+        last_message = LastMessageSchema(
+            sender=message.sender,
+            content=message.content,
+            timestamp=message.timestamp
+        )
+        chat_response = ChatWithLastMessageResponse(
+            chat_id=chat.id,
+            last_message=last_message
+        )
+        chats_with_last_messages.append(chat_response)
+    
+    return chats_with_last_messages
+
+async def get_last_n_messages(session: AsyncSession, chat: Chat, limit: int = 5) -> List[Message]:
+    """
+    Получает последние N сообщений из чата.
+    """
+    stmt = select(Message).where(Message.chat_id == chat.id).order_by(desc(Message.timestamp)).limit(limit)
+    result = await session.execute(stmt)
+    messages = result.scalars().all()
+    return list(reversed(messages))  # Возвращаем в хронологическом порядке
 
 
 core/models/db_helper.py
@@ -736,29 +1134,36 @@ class DatabaseHelper:
 db_helper = DatabaseHelper(url=settings.DATABASE_URL, echo=settings.DB_ECHO)
 
 
-core/models/document.py
+core/models/message.py
 
-# core/models/document.py
-from sqlalchemy.orm import Mapped, mapped_column
+# core/models/message.py
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
-
-class Document(Base):
-    filename: Mapped[str]
-    content: Mapped[str]
-    user_id: Mapped[str]
-
-core/models/mixins.py
-
+from datetime import datetime
+class Message(Base):
+    __tablename__ = "messages"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column()
+    sender: Mapped[str] = mapped_column()  # 'user' или 'bot'
+    content: Mapped[str] = mapped_column()
+    timestamp: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    chat: Mapped["Chat"] = relationship("Chat", back_populates="messages")
 
 
 core/models/user.py
 
-from sqlalchemy.orm import Mapped, mapped_column
+# core/models/user.py
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
 
 class User(Base):
+    __tablename__ = "users"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(unique=True, index=True)
-    thread_id: Mapped[str] = mapped_column(unique=True)
+    chats: Mapped[list["Chat"]] = relationship("Chat", back_populates="user")
+
 
 docker-compose.yml
 
@@ -772,7 +1177,13 @@ langgraph
 langchain-community
 langchain-postgres
 langchain-core
-langchain-huggingface
-sentence-transformers
 yandexcloud
 python-docx
+pytesseract
+pillow
+fastapi
+uvicorn[standart]
+sqlalchemy[asyncio]
+asyncpg
+aiofiles
+pydantic-settings

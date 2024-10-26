@@ -4,8 +4,6 @@ langgraph
 langchain-community
 langchain-postgres
 langchain-core
-langchain-huggingface
-sentence-transformers
 yandexcloud
 python-docx
 pytesseract
@@ -16,3 +14,4 @@ sqlalchemy[asyncio]
 asyncpg
 aiofiles
 pydantic-settings
+alembic
