@@ -2,6 +2,9 @@
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
 from datetime import datetime
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .chat import Chat
 class Message(Base):
     __tablename__ = "messages"
     
