@@ -1,96 +1,134 @@
 # app/api/endpoints.py
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
-import photo_indexes
+import uuid
+import aiofiles
+import os
 from ...core.models.crud import (
     create_user,
     get_user_by_user_id,
     create_chat,
     create_message,
-    get_chat_history,
+    get_last_five_chats_with_last_message,
+    get_last_n_messages,
 )
 from ...core.models.db_helper import db_helper
 from ...core.models.chat import Chat
-from ..graphs.main_graph import worker  # Предполагается, что worker доступен из llm.py
+from ..services.llm import worker  # Предполагается, что worker доступен из llm.py
 from ..schemas.state import State
-from langchain.schema import Document
-from ..schemas.chat import ChatHistoryResponse
-from ..schemas.message import SendMessageResponse
+from ..schemas.chat import ChatHistoryResponse, ChatWithLastMessageResponse
+from ..schemas.message import SendMessageResponse, SendMessageRequest, PhotoInfo
+from ..schemas.user import UserCreateResponse
 from PIL import Image
 import pytesseract
+from io import BytesIO
+import base64
 from datetime import datetime
-import os
 
 router = APIRouter()
 
-@router.post("/upload_history")
-async def upload_history(user_id: str, history: List[dict], session: AsyncSession = Depends(db_helper.session_dependency)):
-    user = await get_user_by_user_id(session, user_id)
-    if not user:
-        user = await create_user(session, user_id)
-    chat = await create_chat(session, user)
-    for msg in history:
-        await create_message(session, chat, msg['sender'], msg['content'])
-    return {"status": "success", "chat_id": chat.id}
+@router.post("/user", response_model=UserCreateResponse)
+async def new_user(session: AsyncSession = Depends(db_helper.session_dependency)):
+    """
+    Создает нового пользователя с уникальным user_id.
+    """
+    try:
+        # Генерация нового UUID
+        new_uuid = str(uuid.uuid4())
+        new_user = await create_user(session=session, user_id=new_uuid)
+        return UserCreateResponse(user_id=new_user.user_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/chat_history/{chat_id}", response_model=ChatHistoryResponse)
-async def chat_history(chat_id: int, session: AsyncSession = Depends(db_helper.session_dependency)):
-    chat = await session.get(Chat, chat_id)
-    if not chat:
-        raise HTTPException(status_code=404, detail="Chat not found")
-    messages = await get_chat_history(session, chat)
-    return ChatHistoryResponse(messages=[{"sender": msg.sender, "content": msg.content, "timestamp": msg.timestamp} for msg in messages])
+@router.get("/last/{user_id}", response_model=List[ChatWithLastMessageResponse])
+async def get_last_five_chat_by_id(
+        user_id: str,
+        session: AsyncSession = Depends(db_helper.session_dependency)
+):
+    """
+    Получает последние пять чатов пользователя идентификатора user_id.
+    """
+    try:
+        # Проверяем существование пользователя
+        user = await get_user_by_user_id(session, user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Получаем последние пять чатов с последними сообщениями
+        chats_with_messages = await get_last_five_chats_with_last_message(session, user_id, limit=5)
+        return chats_with_messages
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/send_message", response_model=SendMessageResponse)
 async def send_message(
-    user_id: str,
-    chat_id: int,
-    message: str,
-    files: List[UploadFile] = File(None),
+    request: SendMessageRequest,
     session: AsyncSession = Depends(db_helper.session_dependency)
 ):
-    # Проверка пользователя
+    """
+    Отправляет сообщение пользователем в чат и возвращает ответ от бота.
+    Поддерживает отправку изображений в формате Base64.
+    """
+    user_id = request.user_id
+    chat_id = request.chat_id
+    message = request.message
+    images = request.images
+
+    # Проверка существования пользователя
     user = await get_user_by_user_id(session, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Проверка чата
+    # Проверка существования чата
     chat = await session.get(Chat, chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     
-    # Обработка файлов (фото)
+    # Обработка отправленных изображений (Base64)
     image_texts = []
-    if files:
-        for file in files:
-            if file.content_type.startswith("image/"):
-                file_path = os.path.join("uploads", file.filename)
+    if images:
+        for img in images:
+            try:
+                # Декодирование Base64 в байты
+                image_data = base64.b64decode(img.data)
+                
+                # Сохранение изображения на сервер
+                file_path = os.path.join("uploads", img.filename)
                 os.makedirs("uploads", exist_ok=True)
                 async with aiofiles.open(file_path, 'wb') as out_file:
-                    content = await file.read()
-                    await out_file.write(content)
+                    await out_file.write(image_data)
                 
                 # Конвертация изображения в текст с помощью OCR
-                try:
-                    img = Image.open(file_path)
-                    text = pytesseract.image_to_string(img, lang='rus')  # Предполагается, что текст на русском
-                    image_texts.append(text)
-                except Exception as e:
-                    raise HTTPException(status_code=500, detail=f"Ошибка обработки изображения: {e}")
+                img_pil = Image.open(BytesIO(image_data))
+                text = pytesseract.image_to_string(img_pil, lang='rus')  # Предполагаем, что текст на русском
+                image_texts.append(text)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Ошибка обработки изображения {img.filename}: {e}")
 
     # Комбинирование текста сообщения и текста из изображений
-    combined_message = message + "\n" + "\n".join(image_texts) if image_texts else message
+    if image_texts:
+        combined_message = f"{message}\n" + "\n".join(image_texts)
+    else:
+        combined_message = message
     
     # Сохранение сообщения пользователя в базе данных
-    user_message = await create_message(session, chat, "user", combined_message)
+    try:
+        await create_message(session, chat, "user", combined_message)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения сообщения: {e}")
     
-    # Получение последних 6 сообщений из истории чата
-    last_messages_objs = await get_last_messages(session, chat, limit=5)  # Последние 5 сообщений до текущего
-    # Формирование списка кортежей (sender, content)
-    last_messages = [(msg.sender, msg.content) for msg in last_messages_objs]
-    # Добавление текущего сообщения пользователя
-    last_messages.append(("user", combined_message))
+    # Получение последних 5 сообщений из чата для контекста
+    try:
+        last_messages_objs = await get_last_n_messages(session, chat, limit=5)
+        # Формирование списка кортежей (sender, content)
+        last_messages = [(msg.sender, msg.content) for msg in last_messages_objs]
+        # Добавление текущего сообщения пользователя для формирования контекста
+        last_messages.append(("user", combined_message))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка получения истории чата: {e}")
     
     # Инициализация состояния
     initial_state: State = {
@@ -104,15 +142,18 @@ async def send_message(
         "rewrite": False
     }
     
-    # Вызов worker
+    # Вызов worker для обработки состояния
     try:
         response_state = await worker.ainvoke(initial_state)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка при вызове worker: {e}")
     
-    # Сохранение ответа бота в базе данных
+    # Получение ответа бота и его сохранение
     bot_answer = response_state.get("answer", "")
-    await create_message(session, chat, "bot", bot_answer)
+    try:
+        await create_message(session, chat, "bot", bot_answer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения ответа бота: {e}")
     
     # Обработка rel_docs для отправки фотографий
     photos_info = []
@@ -130,14 +171,22 @@ async def send_message(
                     chapter_num = parts[0]
                     image_num_part = parts[1].split('.')[0]  # Пример: 'image1.png' -> 'image1'
                     image_num = ''.join(filter(str.isdigit, image_num_part))  # Извлекаем только цифры
-                    photos_info.append({
-                        "chapter": chapter_num,
-                        "image_number": image_num,
-                        "path": path
-                    })
+                    
+                    # Чтение изображения и кодирование в Base64
+                    try:
+                        with open(path, "rb") as image_file:
+                            encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+                    except Exception as e:
+                        raise HTTPException(status_code=500, detail=f"Ошибка чтения изображения {path}: {e}")
+                    
+                    photos_info.append(PhotoInfo(
+                        chapter=chapter_num,
+                        image_number=image_num,
+                        base64_data=encoded_string
+                    ))
     
     return SendMessageResponse(
-        user_message=user_message.content,
+        user_message=combined_message,
         bot_answer=bot_answer,
         photos=photos_info
     )
