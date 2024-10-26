@@ -42,6 +42,7 @@ async def create_branch(db: AsyncSession, user_id: str):
 async def get_last_five_branch_answers(db: AsyncSession, user_id: str, limit: int = 5):
     query = (select(models.ChatBranch.id, models.ChatMessage.user_id)
              .join(target=ChatMessage, user_id=user_id)
+             .where()
              .order_by(models.ChatMessage.timestamp.desc())).limit(limit)
     result = await db.execute(query)
     return result.scalars().all()

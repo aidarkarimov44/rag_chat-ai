@@ -13,6 +13,7 @@ class ChatMessage(Base):
     message_id = Column(String, unique=True, default=lambda: str(uuid.uuid4()), index=True)
     user_id = Column(String, index=True)
     branch_id = Column(String, index=True)
+    sender_role = Column(String)
     content = Column(JSON)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 
