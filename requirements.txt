@@ -15,3 +15,4 @@ uvicorn[standart]
 sqlalchemy[asyncio]
 asyncpg
 aiofiles
+pydantic-settings
