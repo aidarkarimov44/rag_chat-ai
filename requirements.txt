@@ -1,9 +1,3 @@
-fastapi
-uvicorn[standard]
-sqlalchemy[asyncio]
-asyncpg
-pydantic-settings
-alembic
 python-dotenv
 langchain
 langgraph
@@ -13,5 +7,4 @@ langchain-core
 langchain-huggingface
 sentence-transformers
 yandexcloud
-pydantic
-requests
+python-docx

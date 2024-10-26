@@ -46,8 +46,9 @@ def split_text_by_headings(text: str, titles: dict):
 
         # Создаем объект Document с метаданными
         doc = Document(
-            page_content=content,
+            page_content=content[:1000],
             metadata={
+                "content":content,
                 "chapter": chapter,
                 "title": chapter_title,
                 "paths": image_paths
@@ -65,14 +66,14 @@ def get_files_by_number(number):
 
 # Применяем функцию для разделения текста
 documents = split_text_by_headings(text_content, titles)
-
+print(len(documents))
 # Выводим результат
-count = 10
-for doc in documents:
-    print(f"{doc.metadata['chapter']}, Заголовок: {doc.metadata['title']}")
-    print(f"Пути к фоткам: {doc.metadata['paths']}")
-    print(f"Содержимое:\n{len(doc.page_content), doc.page_content}") 
-    if count==-1:
-        break
-    count -=1
-    print()
+# count = 10
+# for doc in documents:
+#     print(f"{doc.metadata['chapter']}, Заголовок: {doc.metadata['title']}")
+#     print(f"Пути к фоткам: {doc.metadata['paths']}")
+#     print(f"Содержимое:\n{len(doc.page_content), doc.page_content}") 
+#     if count==-1:
+#         break
+#     count -=1
+#     print()

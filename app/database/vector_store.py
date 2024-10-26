@@ -2,6 +2,7 @@ from functools import lru_cache
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_postgres import PGVector
 from ..config import settings
+from ..chunks_creating import documents
 
 @lru_cache
 def get_vectorstore() -> PGVector:
@@ -18,3 +19,6 @@ def get_vectorstore() -> PGVector:
     )
     return vectorstore
 
+vectorstore = get_vectorstore()
+
+vectorstore.add_documents(documents=documents)
