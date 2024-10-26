@@ -116,7 +116,7 @@ print(all_files)
 
 # Функция для проверки, начинается ли имя файла с определенного номера
 def get_files_by_number(number):
-    return [f for f in all_files if f.startswith(str(number))]
+    return [f for f in all_files if f.startswith(str(number)+'_')]
 
 
 # Создаем словарь для хранения названий файлов по заголовкам

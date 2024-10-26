@@ -61,13 +61,18 @@ def split_text_by_headings(text: str, titles: dict):
 def get_files_by_number(number):
     # Здесь функция get_files_by_number уже должна быть реализована
     # для получения путей к фоткам, которые соответствуют главе
-    return [f for f in os.listdir("images") if f.startswith(str(number))]
+    return [f for f in os.listdir("images") if f.startswith(str(number)+'_')]
 
 # Применяем функцию для разделения текста
 documents = split_text_by_headings(text_content, titles)
 
 # Выводим результат
+count = 10
 for doc in documents:
-    print(f"Глава: {doc.metadata['chapter']}, Заголовок: {doc.metadata['title']}")
+    print(f"{doc.metadata['chapter']}, Заголовок: {doc.metadata['title']}")
     print(f"Пути к фоткам: {doc.metadata['paths']}")
-    print(f"Содержимое:\n{doc.page_content[:500]}")  # Выводим первые 500 символов для проверки
+    print(f"Содержимое:\n{len(doc.page_content), doc.page_content}") 
+    if count==-1:
+        break
+    count -=1
+    print()
