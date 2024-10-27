@@ -1,7 +1,6 @@
 from functools import lru_cache
 from langchain_postgres import PGVector
 from ..config import settings
-from ..chunks_creating import documents
 from langchain_community.embeddings import GigaChatEmbeddings
 # from langchain.embeddings.base import Embeddings
 import time
