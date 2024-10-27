@@ -1,15 +1,28 @@
-# Используем официальный Python образ
-FROM python:3.11-slim
+# Используем официальный образ Python с поддержкой CUDA
+FROM nvidia/cuda:11.7.0-cudnn8-runtime-ubuntu22.04
 
 # Устанавливаем зависимости системы
 RUN apt-get update && \
-    apt-get install -y build-essential libpq-dev libffi-dev libssl-dev libxml2-dev libxslt1-dev zlib1g-dev poppler-utils tesseract-ocr && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    python3.11-dev \
+    build-essential \
+    libpq-dev \
+    libffi-dev \
+    libssl-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    zlib1g-dev \
+    poppler-utils \
+    tesseract-ocr \
+    tesseract-ocr-rus \
+    netcat \
+    && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем Tesseract языки (например, русский)
-RUN apt-get update && \
-    apt-get install -y tesseract-ocr-rus && \
-    rm -rf /var/lib/apt/lists/*
+# Обновляем альтернативы для Python
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+RUN update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
 
 # Создаем рабочую директорию
 WORKDIR /app
@@ -17,8 +30,10 @@ WORKDIR /app
 # Копируем файлы зависимостей
 COPY requirements.txt .
 
+# Устанавливаем pip
+RUN python -m pip install --upgrade pip
+
 # Устанавливаем зависимости Python
-RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем остальные файлы проекта
@@ -31,6 +46,10 @@ RUN chmod +x /app/wait-for-it.sh
 # Копируем скрипт entrypoint
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
+
+# Указываем, что контейнер использует GPU
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 # Определяем команду по умолчанию
 CMD ["./entrypoint.sh"]

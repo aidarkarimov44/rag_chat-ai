@@ -6,6 +6,8 @@ from app.api import endpoints
 from app.logger import setup_logger
 from app.database.vector_store import get_vectorstore
 from app.chunks_creating import documents
+from app.services.model_loader import ModelLoader  # Импортируем ModelLoader
+
 # Инициализация логгера
 logger = setup_logger("app")
 
@@ -17,7 +19,6 @@ app = FastAPI(
 )
 
 # Настройка CORS (при необходимости)
-# Если ваше приложение будет обращаться из браузера, возможно, потребуется настроить разрешенные источники
 origins = [
     "http://localhost",
     "http://localhost:8000",
@@ -46,13 +47,17 @@ async def root():
 async def health_check():
     return {"status": "OK"}
 
-# Обработчики событий запуска и остановки (по необходимости)
+# Инициализация ModelLoader при запуске
 @app.on_event("startup")
 async def startup_event():
+    logger.info("Инициализация модели Qwen2 VL 7b...")
+    model_loader = ModelLoader()
+    app.state.model_loader = model_loader  # Сохраняем модель в состоянии приложения
+    
+    # Инициализация vectorstore и добавление документов
     vectorstore = get_vectorstore()
     await vectorstore.aadd_documents(documents=documents)
     logger.info("Сервер запускается...")
-    # Здесь можно добавить инициализацию ресурсов, подключение к другим сервисам и т.д.
 
 @app.on_event("shutdown")
 async def shutdown_event():

@@ -31,6 +31,16 @@ services:
     volumes:
       - .:/app
     entrypoint: ["/app/entrypoint.sh"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    # Для Docker Compose версии < 3.8 используйте `runtime: nvidia`
+    runtime: nvidia  # Добавляем поддержку NVIDIA runtime
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 volumes:
   db_data:
