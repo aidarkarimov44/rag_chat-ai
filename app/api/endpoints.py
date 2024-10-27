@@ -37,7 +37,8 @@ async def get_chat_history(chat_id: str, session: AsyncSession = Depends(db_help
         message_responses.append(
             GetMessageHistoryResponse(
                 sender=i.sender,
-                content=i.content
+                content=i.content,
+                timestamp=str(i.timestamp)
             )
         )
     return message_responses

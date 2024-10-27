@@ -40,3 +40,4 @@ class SendMessageResponse(BaseModel):
 class GetMessageHistoryResponse(BaseModel):
     sender: str
     content: str
+    timestamp: str
