@@ -9,5 +9,5 @@ class LastMessageSchema(BaseModel):
     timestamp: datetime
 
 class ChatWithLastMessageResponse(BaseModel):
-    chat_id: int
+    chat_id: str
     last_message: LastMessageSchema

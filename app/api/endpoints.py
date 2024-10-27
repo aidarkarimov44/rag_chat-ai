@@ -1,35 +1,55 @@
 # app/api/endpoints.py
-
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List, Optional
-import uuid
-import aiofiles
-import os
-from core.models.crud import (
-    create_user,
-    get_user_by_user_id,
-    create_chat,
-    create_message,
-    get_last_five_chats_with_last_message,
-    get_last_n_messages,
-)
-from core.models.db_helper import db_helper
-from core.models.chat import Chat
-from ..graphs.main_graph import worker  # Предполагается, что worker доступен из llm.py
-from ..schemas.state import State
-from ..schemas.chat import ChatWithLastMessageResponse
-from ..schemas.message import SendMessageResponse, SendMessageRequest, PhotoInfo
-from ..schemas.user import UserCreateResponse
-from PIL import Image
-import pytesseract
-from io import BytesIO
 import base64
-from datetime import datetime
+import os
+import uuid
+from io import BytesIO
+from typing import List
+
+import aiofiles
+from fastapi import APIRouter, Depends, HTTPException
+from pytesseract import pytesseract
+from sqlalchemy.ext.asyncio import AsyncSession
+from yandex.cloud.ai.vision.v2.image_pb2 import Image
+
+from core.models import User, Chat
+from ..graphs.main_graph import worker
+from ..schemas.chat import ChatWithLastMessageResponse
+from ..schemas.message import GetMessageHistoryResponse, PhotoInfo, SendMessageResponse, SendMessageRequest
+from ..schemas.state import State
+from ..schemas.user import UserResponse  # Предполагается, что worker доступен из llm.py
+from ...core.models.crud import (
+    create_user,
+    create_chat,
+    get_user_by_user_id,
+    get_last_five_chats_with_last_message,
+    get_all_chat_history_by_chat_id, create_message, get_last_n_messages
+)
+from ...core.models.db_helper import db_helper
 
 router = APIRouter()
 
-@router.post("/user", response_model=UserCreateResponse)
+
+@router.get("/chat_history/{chat_id}", response_model=List[GetMessageHistoryResponse])
+async def get_chat_history(chat_id: str, session: AsyncSession = Depends(db_helper.session_dependency)):
+    messages = await get_all_chat_history_by_chat_id(session, int(chat_id))
+    message_responses = []
+    for i in messages:
+        message_responses.append(
+            GetMessageHistoryResponse(
+                sender=i.sender,
+                content=i.content
+            )
+        )
+    return message_responses
+
+
+@router.post("/chat-create/{user_id}")
+async def create_chat_post(user_id: str, session: AsyncSession = Depends(db_helper.session_dependency)):
+    chat = await create_chat(session, User(id=int(user_id)))
+    return {"chat_id" : str(chat.id)}
+
+
+@router.post("/user", response_model=UserResponse)
 async def new_user(session: AsyncSession = Depends(db_helper.session_dependency)):
     """
     Создает нового пользователя с уникальным user_id.
@@ -38,9 +58,10 @@ async def new_user(session: AsyncSession = Depends(db_helper.session_dependency)
         # Генерация нового UUID
         new_uuid = str(uuid.uuid4())
         new_user = await create_user(session=session, user_id=new_uuid)
-        return UserCreateResponse(user_id=new_user.user_id)
+        return UserResponse(user_id=str(new_user.id))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/last/{user_id}", response_model=List[ChatWithLastMessageResponse])
 async def get_last_five_chat_by_id(
@@ -52,12 +73,12 @@ async def get_last_five_chat_by_id(
     """
     try:
         # Проверяем существование пользователя
-        user = await get_user_by_user_id(session, user_id)
+        user = await get_user_by_user_id(session, int(user_id))
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Получаем последние пять чатов с последними сообщениями
-        chats_with_messages = await get_last_five_chats_with_last_message(session, user_id, limit=5)
+        chats_with_messages = await get_last_five_chats_with_last_message(session, int(user_id), limit=5)
         return chats_with_messages
     except HTTPException as he:
         raise he
@@ -66,8 +87,8 @@ async def get_last_five_chat_by_id(
 
 @router.post("/send_message", response_model=SendMessageResponse)
 async def send_message(
-    request: SendMessageRequest,
-    session: AsyncSession = Depends(db_helper.session_dependency)
+        request: SendMessageRequest,
+        session: AsyncSession = Depends(db_helper.session_dependency)
 ):
     """
     Отправляет сообщение пользователем в чат и возвращает ответ от бота.
@@ -79,20 +100,15 @@ async def send_message(
     images = request.images
 
     # Проверка существования пользователя
-    user = await get_user_by_user_id(session, user_id)
+    user = await get_user_by_user_id(session, int(user_id))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    # Попытка получить чат
-    chat = await session.get(Chat, chat_id)
-    
-    # Если чат не найден, создаем новый чат для пользователя
+
+    # Проверка существования чата
+    chat = await session.get(Chat, int(chat_id))
     if not chat:
-        try:
-            chat = await create_chat(session, user)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Ошибка создания нового чата: {e}")
-    
+        chat = await create_chat(session, User())
+
     # Обработка отправленных изображений (Base64)
     image_texts = []
     if images:
@@ -100,13 +116,13 @@ async def send_message(
             try:
                 # Декодирование Base64 в байты
                 image_data = base64.b64decode(img.data)
-                
+
                 # Сохранение изображения на сервер
                 file_path = os.path.join("uploads", img.filename)
                 os.makedirs("uploads", exist_ok=True)
                 async with aiofiles.open(file_path, 'wb') as out_file:
                     await out_file.write(image_data)
-                
+
                 # Конвертация изображения в текст с помощью OCR
                 img_pil = Image.open(BytesIO(image_data))
                 text = pytesseract.image_to_string(img_pil, lang='rus')  # Предполагаем, что текст на русском
@@ -119,13 +135,13 @@ async def send_message(
         combined_message = f"{message}\n" + "\n".join(image_texts)
     else:
         combined_message = message
-    
+
     # Сохранение сообщения пользователя в базе данных
     try:
         await create_message(session, chat, "user", combined_message)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка сохранения сообщения: {e}")
-    
+
     # Получение последних 5 сообщений из чата для контекста
     try:
         last_messages_objs = await get_last_n_messages(session, chat, limit=5)
@@ -135,7 +151,7 @@ async def send_message(
         last_messages.append(("user", combined_message))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка получения истории чата: {e}")
-    
+
     # Инициализация состояния
     initial_state: State = {
         "user_message": combined_message,
@@ -147,20 +163,20 @@ async def send_message(
         "retries": 0,
         "rewrite": False
     }
-    
+
     # Вызов worker для обработки состояния
-    # try:
-    #     response_state = await worker.ainvoke(initial_state)
-    # except Exception as e:
-    #     raise HTTPException(status_code=500, detail=f"Ошибка при вызове worker: {e}")
-    response_state = await worker.ainvoke(initial_state)
+    try:
+        response_state = await worker.ainvoke(initial_state)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка при вызове worker: {e}")
+
     # Получение ответа бота и его сохранение
     bot_answer = response_state.get("answer", "")
     try:
         await create_message(session, chat, "bot", bot_answer)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка сохранения ответа бота: {e}")
-    
+
     # Обработка rel_docs для отправки фотографий
     photos_info = []
     if response_state.get("rel_docs"):
@@ -177,22 +193,23 @@ async def send_message(
                     chapter_num = parts[0]
                     image_num_part = parts[1].split('.')[0]  # Пример: 'image1.png' -> 'image1'
                     image_num = ''.join(filter(str.isdigit, image_num_part))  # Извлекаем только цифры
-                    
+
                     # Чтение изображения и кодирование в Base64
                     try:
                         with open(path, "rb") as image_file:
                             encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
                     except Exception as e:
                         raise HTTPException(status_code=500, detail=f"Ошибка чтения изображения {path}: {e}")
-                    
+
                     photos_info.append(PhotoInfo(
                         chapter=chapter_num,
                         image_number=image_num,
                         base64_data=encoded_string
                     ))
-    
+
     return SendMessageResponse(
         user_message=combined_message,
         bot_answer=bot_answer,
+        chat_id=chat.id,
         photos=photos_info
     )

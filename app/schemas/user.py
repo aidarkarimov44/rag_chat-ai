@@ -1,5 +1,5 @@
-# app/schemas/user.py
 from pydantic import BaseModel
 
-class UserCreateResponse(BaseModel):
+
+class UserResponse(BaseModel):
     user_id: str
