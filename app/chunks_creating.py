@@ -1,9 +1,15 @@
+# app/chunks_creating.py
+import uuid 
 import re
 from docx import Document as DocxDocument
 from langchain.schema import Document
 from app import photo_indexes
 import os
-
+from .preprocessing.context_annotator import ContextAnnotator
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from rank_bm25 import BM25Okapi
+from typing import List
+from tqdm import tqdm
 # Чтение текста из файла .docx
 def load_text_from_docx(file_path):
     doc = DocxDocument(file_path)
@@ -35,20 +41,17 @@ def split_text_by_headings(text: str, titles: dict):
         start = matches[i].start()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         
-        chapter = matches[i].group(1).strip()  # номер главы или специальный заголовок
-        chapter_title = titles.get(chapter, "Неизвестный заголовок")  # заголовок из словаря titles
+        chapter = matches[i].group(1).strip()
+        chapter_title = titles.get(chapter, "Неизвестный заголовок")
         
-        # Извлечение содержимого между заголовками (включая заголовок)
         content = text[start:end].strip()
+        image_paths = get_files_by_number(chapter)
         
-        # Поиск связанных путей к фотографиям для данной главы
-        image_paths = get_files_by_number(chapter)  # используем ранее написанную функцию
-
-        # Создаем объект Document с метаданными
         doc = Document(
             page_content=content[:1000],
             metadata={
-                "content":content,
+                "id": str(uuid.uuid4()),  # Добавляем уникальный ID
+                "content": content,
                 "chapter": chapter,
                 "title": chapter_title,
                 "paths": image_paths
@@ -65,15 +68,45 @@ def get_files_by_number(number):
     return [f for f in os.listdir("images") if f.startswith(str(number)+'_')]
 
 # Применяем функцию для разделения текста
-documents = split_text_by_headings(text_content, titles)
-print(len(documents))
-# Выводим результат
-# count = 10
-# for doc in documents:
-#     print(f"{doc.metadata['chapter']}, Заголовок: {doc.metadata['title']}")
-#     print(f"Пути к фоткам: {doc.metadata['paths']}")
-#     print(f"Содержимое:\n{len(doc.page_content), doc.page_content}") 
-#     if count==-1:
-#         break
-#     count -=1
-#     print()
+async def create_annotated_documents() -> List[Document]:
+    # Создаем базовые документы как раньше
+    documents = split_text_by_headings(text_content, titles)
+    
+    # Создаем аннотатор
+    annotator = ContextAnnotator()
+    
+    # Добавляем контекст к каждому документу
+    annotated_documents = []
+    for doc in tqdm(documents):
+        # annotated_text = await annotator.annotate_chunk(
+        #     doc.page_content,
+        #     doc.metadata
+        # )
+        annotated_text = "Текст про " + doc.page_content 
+        # Store both original content and annotated text
+        original_content = doc.page_content
+        doc.page_content = annotated_text  # annotated for vectorstore
+        annotated_documents.append(doc)
+        
+        # Create a separate Document for BM25 indexing with original content
+        bm25_doc = Document(
+            page_content=original_content,
+            metadata=doc.metadata  # share metadata
+        )
+        annotated_documents.append(bm25_doc)
+        # annotated_documents = []
+    return annotated_documents
+
+def create_bm25_index(documents: List[Document]) -> tuple:
+    # Separate original documents for BM25
+    original_docs = [doc for doc in documents if doc.page_content == doc.metadata['content']]
+    
+    # Создаем BM25 индекс
+    tokenized_docs = [doc.page_content.split() for doc in original_docs]
+    bm25 = BM25Okapi(tokenized_docs)
+    
+    # Добавляем BM25 скоры в метаданные документов
+    for i, doc in enumerate(original_docs):
+        doc.metadata['bm25_scores'] = bm25.get_scores(doc.page_content.split())
+    
+    return original_docs, bm25

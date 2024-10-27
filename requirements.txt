@@ -15,8 +15,12 @@ langchain-postgres
 langchain-core
 yandexcloud
 python-docx
-pytesseract
+httpx
 pillow
 torch>=2.0.0
 transformers
 qwen_vl_utils
+psycopg2-binary
+gigachat
+rank-bm25
+tqdm

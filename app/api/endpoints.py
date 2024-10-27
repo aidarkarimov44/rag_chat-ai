@@ -1,5 +1,4 @@
 # app/api/endpoints.py
-
 import base64
 import os
 import uuid
@@ -8,7 +7,9 @@ from typing import List
 
 import aiofiles
 from fastapi import APIRouter, Depends, HTTPException
+from pytesseract import pytesseract
 from sqlalchemy.ext.asyncio import AsyncSession
+from yandex.cloud.ai.vision.v2.image_pb2 import Image
 
 from core.models import User, Chat
 from ..graphs.main_graph import worker
@@ -59,6 +60,7 @@ async def new_user(session: AsyncSession = Depends(db_helper.session_dependency)
         return UserResponse(user_id=str(new_user.id))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/last/{user_id}", response_model=List[ChatWithLastMessageResponse])
 async def get_last_five_chat_by_id(

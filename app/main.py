@@ -7,6 +7,9 @@ from app.logger import setup_logger
 from app.database.vector_store import get_vectorstore
 from app.chunks_creating import documents
 from app.services.model_loader import ModelLoader  # Импортируем ModelLoader
+from app.chunks_creating import create_annotated_documents, create_bm25_index
+from app.state import app_state  # Импортируйте app_state
+import asyncio
 
 # Инициализация логгера
 logger = setup_logger("app")
@@ -53,13 +56,30 @@ async def startup_event():
     logger.info("Инициализация модели Qwen2 VL 7b...")
     model_loader = ModelLoader()
     app.state.model_loader = model_loader  # Сохраняем модель в состоянии приложения
-    
-    # Инициализация vectorstore и добавление документов
-    vectorstore = get_vectorstore()
-    await vectorstore.aadd_documents(documents=documents)
     logger.info("Сервер запускается...")
+
+    # Получение аннотированных документов
+    annotated_documents = await create_annotated_documents()
+
+    # Разделение для vectorstore и BM25
+    vector_documents = [doc for doc in annotated_documents if doc.page_content != doc.metadata['content']]
+    bm25_documents = [doc for doc in annotated_documents if doc.page_content == doc.metadata['content']]
+
+    # Индексация в vectorstore
+    vectorstore = get_vectorstore()
+    await vectorstore.aadd_documents(documents=vector_documents)
+
+    # Создание BM25 индекс
+    bm25_documents, bm25 = create_bm25_index(bm25_documents)
+
+    # Сохранение BM25 индекс и документы в app_state
+    app_state.bm25 = bm25
+    app_state.bm25_documents = bm25_documents
+
+    logger.info("Индексация завершена")
+    # Здесь можно добавить инициализацию ресурсов, подключение к другим сервисам и т.д.
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Сервер останавливается...")
-    # Здесь можно добавить очистку ресурсов, закрытие соединений и т.д.
+    # Очистка ресурсов, закрытие соединений и т.д.
