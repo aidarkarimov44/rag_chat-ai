@@ -17,14 +17,14 @@ from ..schemas.chat import ChatWithLastMessageResponse
 from ..schemas.message import GetMessageHistoryResponse, PhotoInfo, SendMessageResponse, SendMessageRequest
 from ..schemas.state import State
 from ..schemas.user import UserResponse
-from ...core.models.crud import (
+from core.models.crud import (
     create_user,
     create_chat,
     get_user_by_user_id,
     get_last_five_chats_with_last_message,
     get_all_chat_history_by_chat_id, create_message, get_last_n_messages
 )
-from ...core.models.db_helper import db_helper
+from core.models.db_helper import db_helper
 from ..dependencies import get_model_loader  # Импортируем зависимость
 
 router = APIRouter()

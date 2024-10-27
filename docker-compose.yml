@@ -18,29 +18,53 @@ services:
       timeout: 5s
       retries: 5
 
-  app:
+  backend:
     build: .
     container_name: fastapi_app
     depends_on:
       db:
         condition: service_healthy
     env_file:
-      - .env
+      - ./backend/.env
     ports:
       - "8000:8000"
     volumes:
-      - .:/app
+      - ./backend:/app
     entrypoint: ["/app/entrypoint.sh"]
     deploy:
       resources:
         reservations:
           devices:
             - capabilities: [gpu]
-    # Для Docker Compose версии < 3.8 используйте `runtime: nvidia`
     runtime: nvidia  # Добавляем поддержку NVIDIA runtime
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+  frontend:
+    build: ./front-sila.ai
+    container_name: react_frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+    command: ["npm", "run", "dev"]
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx_server
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./frontend/dist:/usr/share/nginx/html
+    depends_on:
+      - frontend
+      - backend
+    restart: always
 
 volumes:
   db_data:

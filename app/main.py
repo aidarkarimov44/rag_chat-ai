@@ -21,19 +21,20 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Настройка CORS (при необходимости)
+# ...
+
 origins = [
-    "http://localhost",
-    "http://localhost:8000",
-    # Добавьте другие разрешенные источники
+    "http://localhost:3000",
+    "https://your-domain.com",
+    # Добавьте другие разрешённые источники
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,            # Разрешенные источники
+    allow_origins=origins,  # Разрешённые источники
     allow_credentials=True,
-    allow_methods=["*"],              # Разрешенные методы HTTP
-    allow_headers=["*"],              # Разрешенные заголовки
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Подключение маршрутизатора API с префиксом /api
