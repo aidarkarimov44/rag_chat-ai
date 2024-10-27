@@ -1,12 +1,18 @@
 # core/models/message.py
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import ForeignKey  # Импортируйте ForeignKey
 from .base import Base
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .chat import Chat
+
 class Message(Base):
     __tablename__ = "messages"
     
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    chat_id: Mapped[int] = mapped_column()
+    chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id"), nullable=False)  # Добавлен ForeignKey
     sender: Mapped[str] = mapped_column()  # 'user' или 'bot'
     content: Mapped[str] = mapped_column()
     timestamp: Mapped[datetime] = mapped_column(default=datetime.utcnow)

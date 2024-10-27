@@ -1,4 +1,8 @@
 ├── Dockerfile
+├── alembic/
+│   ├── env.py
+│   └── versions/
+│       └── b4dc58d4648e_initial_migration.py
 ├── app/
 │   ├── __init__.py
 │   ├── api/
@@ -17,7 +21,10 @@
 │   ├── photo_indexes.py
 │   ├── schemas/
 │   │   ├── __init__.py
-│   │   └── state.py
+│   │   ├── chat.py
+│   │   ├── message.py
+│   │   ├── state.py
+│   │   └── user.py
 │   └── services/
 │       ├── __init__.py
 │       └── llm.py
@@ -27,17 +34,203 @@
 │   └── models/
 │       ├── __init__.py
 │       ├── base.py
+│       ├── chat.py
 │       ├── crud.py
 │       ├── db_helper.py
-│       ├── document.py
-│       ├── mixins.py
+│       ├── message.py
 │       └── user.py
 ├── docker-compose.yml
+├── entrypoint.sh
 ├── images/
-└── requirements.txt
+├── logs/
+├── requirements.txt
+└── wait-for-it.sh
 
 Dockerfile
 
+# Используем официальный Python образ
+FROM python:3.11-slim
+
+# Устанавливаем зависимости системы
+RUN apt-get update && \
+    apt-get install -y build-essential libpq-dev libffi-dev libssl-dev libxml2-dev libxslt1-dev zlib1g-dev poppler-utils tesseract-ocr && \
+    rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем Tesseract языки (например, русский)
+RUN apt-get update && \
+    apt-get install -y tesseract-ocr-rus && \
+    rm -rf /var/lib/apt/lists/*
+
+# Создаем рабочую директорию
+WORKDIR /app
+
+# Копируем файлы зависимостей
+COPY requirements.txt .
+
+# Устанавливаем зависимости Python
+RUN pip install --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем остальные файлы проекта
+COPY . .
+
+# Копируем скрипт ожидания
+COPY wait-for-it.sh /app/wait-for-it.sh
+RUN chmod +x /app/wait-for-it.sh
+
+# Копируем скрипт entrypoint
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Определяем команду по умолчанию
+CMD ["./entrypoint.sh"]
+
+
+alembic/env.py
+
+
+from logging.config import fileConfig
+
+from sqlalchemy import engine_from_config
+from sqlalchemy import pool
+
+from alembic import context
+
+from core.config import settings
+from core.models.base import Base
+from core.models.chat import Chat  # Предполагается, что Base включает все модели
+from core.models.user import User
+from core.models.message import Message
+
+# this is the Alembic Config object, which provides
+# access to the values within the .ini file in use.
+config = context.config
+
+# Interpret the config file for Python logging.
+# This line sets up loggers basically.
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# add your model's MetaData object here
+# for 'autogenerate' support
+target_metadata = Base.metadata
+
+# other values from the config, defined by the needs of env.py,
+# can be acquired:
+# my_important_option = config.get_main_option("my_important_option")
+# ... etc.
+
+def get_url():
+    # Создаем синхронный URL для PostgreSQL
+    return f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+
+def run_migrations_offline() -> None:
+    """Run migrations in 'offline' mode.
+
+    This configures the context with just a URL
+    and not an Engine, though an Engine is acceptable
+    here as well.  By skipping the Engine creation
+    we don't even need a DBAPI to be available.
+
+    Calls to context.execute() here emit the given string to the
+    script output.
+
+    """
+    url = get_url()
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    """Run migrations in 'online' mode.
+
+    In this scenario we need to create an Engine
+    and associate a connection with the context.
+
+    """
+    configuration = config.get_section(config.config_ini_section)
+    configuration["sqlalchemy.url"] = get_url()
+    connectable = engine_from_config(
+        configuration,
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection, target_metadata=target_metadata
+        )
+
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+
+
+alembic/versions/b4dc58d4648e_initial_migration.py
+
+"""Initial migration
+
+Revision ID: b4dc58d4648e
+Revises: 
+Create Date: 2024-10-26 18:56:48.800126
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+
+
+# revision identifiers, used by Alembic.
+revision: str = 'b4dc58d4648e'
+down_revision: Union[str, None] = None
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.create_table('chats',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_table('messages',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('chat_id', sa.Integer(), nullable=False),
+    sa.Column('sender', sa.String(), nullable=False),
+    sa.Column('content', sa.String(), nullable=False),
+    sa.Column('timestamp', sa.DateTime(), nullable=False),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_table('users',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('user_id', sa.String(), nullable=False),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_users_user_id'), 'users', ['user_id'], unique=True)
+    # ### end Alembic commands ###
+
+
+def downgrade() -> None:
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index(op.f('ix_users_user_id'), table_name='users')
+    op.drop_table('users')
+    op.drop_table('messages')
+    op.drop_table('chats')
+    # ### end Alembic commands ###
 
 
 app/__init__.py
@@ -50,6 +243,198 @@ app/api/__init__.py
 
 app/api/endpoints.py
 
+# app/api/endpoints.py
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import List
+import uuid
+import aiofiles
+import os
+from core.models.crud import (
+    create_user,
+    get_user_by_user_id,
+    create_chat,
+    create_message,
+    get_last_five_chats_with_last_message,
+    get_last_n_messages,
+)
+from core.models.db_helper import db_helper
+from core.models.chat import Chat
+from ..graphs.main_graph import worker  # Предполагается, что worker доступен из llm.py
+from ..schemas.state import State
+from ..schemas.chat import ChatWithLastMessageResponse
+from ..schemas.message import SendMessageResponse, SendMessageRequest, PhotoInfo
+from ..schemas.user import UserCreateResponse
+from PIL import Image
+import pytesseract
+from io import BytesIO
+import base64
+from datetime import datetime
+
+router = APIRouter()
+
+@router.post("/user", response_model=UserCreateResponse)
+async def new_user(session: AsyncSession = Depends(db_helper.session_dependency)):
+    """
+    Создает нового пользователя с уникальным user_id.
+    """
+    try:
+        # Генерация нового UUID
+        new_uuid = str(uuid.uuid4())
+        new_user = await create_user(session=session, user_id=new_uuid)
+        return UserCreateResponse(user_id=new_user.user_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/last/{user_id}", response_model=List[ChatWithLastMessageResponse])
+async def get_last_five_chat_by_id(
+        user_id: str,
+        session: AsyncSession = Depends(db_helper.session_dependency)
+):
+    """
+    Получает последние пять чатов пользователя идентификатора user_id.
+    """
+    try:
+        # Проверяем существование пользователя
+        user = await get_user_by_user_id(session, user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Получаем последние пять чатов с последними сообщениями
+        chats_with_messages = await get_last_five_chats_with_last_message(session, user_id, limit=5)
+        return chats_with_messages
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/send_message", response_model=SendMessageResponse)
+async def send_message(
+    request: SendMessageRequest,
+    session: AsyncSession = Depends(db_helper.session_dependency)
+):
+    """
+    Отправляет сообщение пользователем в чат и возвращает ответ от бота.
+    Поддерживает отправку изображений в формате Base64.
+    """
+    user_id = request.user_id
+    chat_id = request.chat_id
+    message = request.message
+    images = request.images
+
+    # Проверка существования пользователя
+    user = await get_user_by_user_id(session, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Проверка существования чата
+    chat = await session.get(Chat, chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    
+    # Обработка отправленных изображений (Base64)
+    image_texts = []
+    if images:
+        for img in images:
+            try:
+                # Декодирование Base64 в байты
+                image_data = base64.b64decode(img.data)
+                
+                # Сохранение изображения на сервер
+                file_path = os.path.join("uploads", img.filename)
+                os.makedirs("uploads", exist_ok=True)
+                async with aiofiles.open(file_path, 'wb') as out_file:
+                    await out_file.write(image_data)
+                
+                # Конвертация изображения в текст с помощью OCR
+                img_pil = Image.open(BytesIO(image_data))
+                text = pytesseract.image_to_string(img_pil, lang='rus')  # Предполагаем, что текст на русском
+                image_texts.append(text)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Ошибка обработки изображения {img.filename}: {e}")
+
+    # Комбинирование текста сообщения и текста из изображений
+    if image_texts:
+        combined_message = f"{message}\n" + "\n".join(image_texts)
+    else:
+        combined_message = message
+    
+    # Сохранение сообщения пользователя в базе данных
+    try:
+        await create_message(session, chat, "user", combined_message)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения сообщения: {e}")
+    
+    # Получение последних 5 сообщений из чата для контекста
+    try:
+        last_messages_objs = await get_last_n_messages(session, chat, limit=5)
+        # Формирование списка кортежей (sender, content)
+        last_messages = [(msg.sender, msg.content) for msg in last_messages_objs]
+        # Добавление текущего сообщения пользователя для формирования контекста
+        last_messages.append(("user", combined_message))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка получения истории чата: {e}")
+    
+    # Инициализация состояния
+    initial_state: State = {
+        "user_message": combined_message,
+        "last_messages": last_messages,
+        "is_index": False,
+        "answer": "",
+        "rel_docs": [],
+        "db_query": "",
+        "retries": 0,
+        "rewrite": False
+    }
+    
+    # Вызов worker для обработки состояния
+    try:
+        response_state = await worker.ainvoke(initial_state)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка при вызове worker: {e}")
+    
+    # Получение ответа бота и его сохранение
+    bot_answer = response_state.get("answer", "")
+    try:
+        await create_message(session, chat, "bot", bot_answer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения ответа бота: {e}")
+    
+    # Обработка rel_docs для отправки фотографий
+    photos_info = []
+    if response_state.get("rel_docs"):
+        for doc in response_state["rel_docs"]:
+            for chapter, details in doc.items():
+                content = details.get("content", "")
+                image_paths = details.get("paths", [])
+                for path in image_paths:
+                    # Извлечение номера главы и номера рисунка из имени файла
+                    filename = os.path.basename(path)
+                    parts = filename.split('_')
+                    if len(parts) < 2:
+                        continue  # Неверный формат имени файла
+                    chapter_num = parts[0]
+                    image_num_part = parts[1].split('.')[0]  # Пример: 'image1.png' -> 'image1'
+                    image_num = ''.join(filter(str.isdigit, image_num_part))  # Извлекаем только цифры
+                    
+                    # Чтение изображения и кодирование в Base64
+                    try:
+                        with open(path, "rb") as image_file:
+                            encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+                    except Exception as e:
+                        raise HTTPException(status_code=500, detail=f"Ошибка чтения изображения {path}: {e}")
+                    
+                    photos_info.append(PhotoInfo(
+                        chapter=chapter_num,
+                        image_number=image_num,
+                        base64_data=encoded_string
+                    ))
+    
+    return SendMessageResponse(
+        user_message=combined_message,
+        bot_answer=bot_answer,
+        photos=photos_info
+    )
 
 
 app/chunks_creating.py
@@ -57,7 +442,7 @@ app/chunks_creating.py
 import re
 from docx import Document as DocxDocument
 from langchain.schema import Document
-import photo_indexes
+from app import photo_indexes
 import os
 
 # Чтение текста из файла .docx
@@ -144,7 +529,12 @@ load_dotenv()
 class Settings:
     YANDEXGPT_IAM_TOKEN:str=os.getenv("YANDEXGPT_IAM_TOKEN")
     YANDEXGPT_MODEL_URI:str=os.getenv("YANDEXGPT_MODEL_URI")
-
+    YANDEXGPT_MAIN_MODEL_URI:str=os.getenv("YANDEX_MAIN_MODEL_URI")
+    EMBEDDINGS_MODEL:str=os.getenv("EMBEDDINGS_MODEL")
+    DEVICE:str=os.getenv("DEVICE")
+    PG_CONNECTION:str=os.getenv("PG_CONNECTION")
+    PG_COLLECTION_NAME:str=os.getenv("PG_COLLECTION_NAME")
+    GIGACHAT_CREDENTIALS:str=os.getenv("GIGACHAT_CREDENTIALS")
 
 settings = Settings()
 
@@ -155,17 +545,67 @@ app/database/__init__.py
 app/database/vector_store.py
 
 from functools import lru_cache
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_postgres import PGVector
 from ..config import settings
 from ..chunks_creating import documents
+from langchain_community.embeddings import GigaChatEmbeddings
+# from langchain.embeddings.base import Embeddings
+import time
+import requests
+from typing import Any, List, Mapping, Optional
+# from langchain.callbacks.manager import CallbackManagerForLLMRun
+import requests
+import langchain
+import os
+# class YandexGPTEmbeddings(Embeddings):
+
+#     def __init__(self, iam_token=None, api_key=None, folder_id=None, sleep_interval=1):
+#         self.iam_token = iam_token
+#         self.sleep_interval = sleep_interval
+#         self.api_key = api_key
+#         self.folder_id = folder_id
+#         if self.iam_token:
+#             self.headers = {'Authorization': 'Bearer ' + self.iam_token}
+#         if self.api_key:
+#             self.headers = {'Authorization': 'Api-key ' + self.api_key,
+#                              "x-folder-id" : self.folder_id }
+                
+#     def embed_document(self, text):
+#         j = {
+#           "model" : "general:embedding",
+#           "embedding_type" : "EMBEDDING_TYPE_DOCUMENT",
+#           "text": text
+#         }
+        
+#         res = requests.post("https://llm.api.cloud.yandex.net/llm/v1alpha/embedding",
+#                             json=j, headers=self.headers)
+#         print(res)
+#         vec = res.json()['embedding']
+#         return vec
+
+#     def embed_documents(self, texts, chunk_size = 0):
+#         res = []
+#         for x in texts:
+#             res.append(self.embed_document(x))
+#             time.sleep(self.sleep_interval)
+#         return res
+        
+#     def embed_query(self, text):
+#         j = {
+#           "model" : "general:embedding",
+#           "embedding_type" : "EMBEDDING_TYPE_QUERY",
+#           "text": text
+#         }
+#         res = requests.post("https://llm.api.cloud.yandex.net/llm/v1alpha/embedding",
+#                             json=j,headers=self.headers)
+#         vec = res.json()['embedding']
+#         time.sleep(self.sleep_interval)
+#         return vec
 
 @lru_cache
 def get_vectorstore() -> PGVector:
-    embeddings = HuggingFaceEmbeddings(
-        model_name=settings.EMBEDDINGS_MODEL,
-        model_kwargs={"device": settings.DEVICE}
-    )
+    # embeddings = YandexGPTEmbeddings(iam_token=settings.YANDEXGPT_IAM_TOKEN)
+    embeddings = GigaChatEmbeddings(credentials=settings.GIGACHAT_CREDENTIALS, verify_ssl_certs=False, scope="GIGACHAT_API_PERS")
     vectorstore = PGVector(
         embeddings=embeddings,
         collection_name=settings.PG_COLLECTION_NAME,
@@ -175,9 +615,6 @@ def get_vectorstore() -> PGVector:
     )
     return vectorstore
 
-vectorstore = get_vectorstore()
-
-vectorstore.add_documents(documents=documents)
 
 app/graphs/__init__.py
 
@@ -191,7 +628,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables.config import RunnableConfig
 from ..schemas.state import State
-from ..services.llm import llm_light, llm_pro
+from ..services.llm import llm_light
 from ..logger import setup_logger
 from langchain_core.output_parsers import StrOutputParser
 from ..database.vector_store import get_vectorstore
@@ -349,7 +786,7 @@ async def generate(state:State)-> State:
 
     Ответ:"""
     prompt = PromptTemplate.from_template(prompt_template)
-    bound = prompt | llm_pro | StrOutputParser()
+    bound = prompt | llm_light | StrOutputParser()
     response:str = await bound.ainvoke({
         "contact_message":contact_message,
         "rel_docs":"\n\n".join([el.values()[0]["text"] for el in state['rel_docs']]),
@@ -453,6 +890,66 @@ def setup_logger(name):
 
 app/main.py
 
+# app/main.py
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.api import endpoints
+from app.logger import setup_logger
+from app.database.vector_store import get_vectorstore
+from app.chunks_creating import documents
+# Инициализация логгера
+logger = setup_logger("app")
+
+# Создание экземпляра FastAPI
+app = FastAPI(
+    title="CILALLM API",
+    description="API для управления чатами и сообщениями с поддержкой изображений",
+    version="1.0.0",
+)
+
+# Настройка CORS (при необходимости)
+# Если ваше приложение будет обращаться из браузера, возможно, потребуется настроить разрешенные источники
+origins = [
+    "http://localhost",
+    "http://localhost:8000",
+    # Добавьте другие разрешенные источники
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,            # Разрешенные источники
+    allow_credentials=True,
+    allow_methods=["*"],              # Разрешенные методы HTTP
+    allow_headers=["*"],              # Разрешенные заголовки
+)
+
+# Подключение маршрутизатора API с префиксом /api
+app.include_router(endpoints.router, prefix="/api")
+
+# Корневой маршрут для проверки работоспособности сервера
+@app.get("/")
+async def root():
+    logger.info("Корневой маршрут был вызван")
+    return {"message": "Добро пожаловать в CILALLM API"}
+
+# Пример маршрута для проверки базы данных или других сервисов (по желанию)
+@app.get("/health")
+async def health_check():
+    return {"status": "OK"}
+
+# Обработчики событий запуска и остановки (по необходимости)
+@app.on_event("startup")
+async def startup_event():
+    vectorstore = get_vectorstore()
+    await vectorstore.aadd_documents(documents=documents)
+    logger.info("Сервер запускается...")
+    # Здесь можно добавить инициализацию ресурсов, подключение к другим сервисам и т.д.
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("Сервер останавливается...")
+    # Здесь можно добавить очистку ресурсов, закрытие соединений и т.д.
 
 
 app/photo_indexes.py
@@ -595,6 +1092,59 @@ app/schemas/__init__.py
 
 
 
+app/schemas/chat.py
+
+# app/schemas/chat.py
+from pydantic import BaseModel
+from datetime import datetime
+from typing import List
+
+class LastMessageSchema(BaseModel):
+    sender: str
+    content: str
+    timestamp: datetime
+
+class ChatWithLastMessageResponse(BaseModel):
+    chat_id: int
+    last_message: LastMessageSchema
+
+
+app/schemas/message.py
+
+# app/schemas/message.py
+from pydantic import BaseModel, Field, validator
+from typing import List, Dict, Optional
+import base64
+
+class MessageImage(BaseModel):
+    filename: str
+    data: str  # Base64-encoded image data
+
+    @validator('data')
+    def validate_base64(cls, v):
+        try:
+            base64.b64decode(v)
+        except Exception:
+            raise ValueError('Invalid base64 encoding')
+        return v
+
+class SendMessageRequest(BaseModel):
+    user_id: str
+    chat_id: int
+    message: str
+    images: Optional[List[MessageImage]] = None  # Опционально список изображений
+
+class PhotoInfo(BaseModel):
+    chapter: str
+    image_number: str
+    base64_data: str  # Base64-encoded image data
+
+class SendMessageResponse(BaseModel):
+    user_message: str
+    bot_answer: str
+    photos: List[PhotoInfo]
+
+
 app/schemas/state.py
 
 from typing import TypedDict, Tuple
@@ -609,6 +1159,15 @@ class State(TypedDict):
     retries:int
     rewrite:bool
 
+app/schemas/user.py
+
+# app/schemas/user.py
+from pydantic import BaseModel
+
+class UserCreateResponse(BaseModel):
+    user_id: str
+
+
 app/services/__init__.py
 
 
@@ -619,7 +1178,7 @@ from ..config import settings
 from langchain_community.llms import YandexGPT
 
 llm_light = YandexGPT(iam_token=settings.YANDEXGPT_IAM_TOKEN, model_uri=settings.YANDEXGPT_MODEL_URI)
-llm_pro = YandexGPT(iam_token=settings.YANDEXGPT_IAM_TOKEN, model_uri=settings.YANDEXGPT_MAIN_MODEL_URI)
+# llm_pro = YandexGPT(iam_token=settings.YANDEXGPT_IAM_TOKEN, model_uri=settings.YANDEXGPT_MAIN_MODEL_URI)
 
 core/__init__.py
 
@@ -637,7 +1196,7 @@ class Settings(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
-    # ... другие настройки ...
+    # Добавьте другие необходимые настройки
 
     class Config:
         env_file = "db.env"
@@ -647,6 +1206,12 @@ settings = Settings()
 
 core/models/__init__.py
 
+# core/models/__init__.py
+from .user import User
+from .chat import Chat
+from .message import Message
+
+__all__ = ["User", "Chat", "Message"]
 
 
 core/models/base.py
@@ -663,32 +1228,114 @@ class Base(DeclarativeBase):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
 
 
+core/models/chat.py
+
+# core/models/chat.py
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from .base import Base
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .user import User
+    from .message import Message
+
+class Chat(Base):
+    __tablename__ = "chats"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column()
+    user: Mapped["User"] = relationship("User", back_populates="chats")
+    messages: Mapped[list["Message"]] = relationship("Message", back_populates="chat")
+
+
 core/models/crud.py
 
+# core/models/crud.py
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, desc, func
+from typing import List, Optional
 from .user import User
-from .document import Document
+from .chat import Chat
+from .message import Message
 
-async def create_user(session: AsyncSession, user_id: str, thread_id: str):
-    user = User(user_id=user_id, thread_id=thread_id)
+from app.schemas.chat import ChatWithLastMessageResponse, LastMessageSchema
+
+async def create_user(session: AsyncSession, user_id: str) -> User:
+    user = User(user_id=user_id)
     session.add(user)
     await session.commit()
+    await session.refresh(user)
     return user
 
-async def get_user_by_user_id(session: AsyncSession, user_id: str):
+async def get_user_by_user_id(session: AsyncSession, user_id: str) -> Optional[User]:
     result = await session.execute(select(User).where(User.user_id == user_id))
     return result.scalar_one_or_none()
 
-async def create_document(session: AsyncSession, filename: str, content: str, user_id: int):
-    document = Document(filename=filename, content=content, user_id=user_id)
-    session.add(document)
+async def create_chat(session: AsyncSession, user: User) -> Chat:
+    chat = Chat(user_id=user.id)
+    session.add(chat)
     await session.commit()
-    return document
+    await session.refresh(chat)
+    return chat
 
-async def get_documents_by_user(session: AsyncSession, user_id: str):
-    result = await session.execute(select(Document).where(Document.user_id == user_id))
-    return result.scalars().all()
+async def create_message(session: AsyncSession, chat: Chat, sender: str, content: str) -> Message:
+    message = Message(chat_id=chat.id, sender=sender, content=content)
+    session.add(message)
+    await session.commit()
+    await session.refresh(message)
+    return message
+
+async def get_last_five_chats_with_last_message(session: AsyncSession, user_id: str, limit: int = 5) -> List[ChatWithLastMessageResponse]:
+    """
+    Получает последние пять чатов пользователя вместе с последним сообщением в каждом чате.
+    """
+    # Подзапрос для получения времени последнего сообщения в каждом чате
+    subquery = (
+        select(
+            Message.chat_id,
+            func.max(Message.timestamp).label("last_message_time")
+        )
+        .join(Chat, Chat.id == Message.chat_id)
+        .join(User, User.id == Chat.user_id)
+        .where(User.user_id == user_id)
+        .group_by(Message.chat_id)
+        .subquery()
+    )
+    
+    # Основной запрос для получения чатов и их последних сообщений
+    stmt = (
+        select(Chat, Message)
+        .join(subquery, Chat.id == subquery.c.chat_id)
+        .join(Message, (Message.chat_id == Chat.id) & (Message.timestamp == subquery.c.last_message_time))
+        .order_by(desc(subquery.c.last_message_time))
+        .limit(limit)
+    )
+    
+    result = await session.execute(stmt)
+    rows = result.fetchall()
+    
+    chats_with_last_messages = []
+    for chat, message in rows:
+        last_message = LastMessageSchema(
+            sender=message.sender,
+            content=message.content,
+            timestamp=message.timestamp
+        )
+        chat_response = ChatWithLastMessageResponse(
+            chat_id=chat.id,
+            last_message=last_message
+        )
+        chats_with_last_messages.append(chat_response)
+    
+    return chats_with_last_messages
+
+async def get_last_n_messages(session: AsyncSession, chat: Chat, limit: int = 5) -> List[Message]:
+    """
+    Получает последние N сообщений из чата.
+    """
+    stmt = select(Message).where(Message.chat_id == chat.id).order_by(desc(Message.timestamp)).limit(limit)
+    result = await session.execute(stmt)
+    messages = result.scalars().all()
+    return list(reversed(messages))  # Возвращаем в хронологическом порядке
 
 
 core/models/db_helper.py
@@ -736,32 +1383,97 @@ class DatabaseHelper:
 db_helper = DatabaseHelper(url=settings.DATABASE_URL, echo=settings.DB_ECHO)
 
 
-core/models/document.py
+core/models/message.py
 
-# core/models/document.py
-from sqlalchemy.orm import Mapped, mapped_column
+# core/models/message.py
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
-
-class Document(Base):
-    filename: Mapped[str]
-    content: Mapped[str]
-    user_id: Mapped[str]
-
-core/models/mixins.py
-
+from datetime import datetime
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .chat import Chat
+class Message(Base):
+    __tablename__ = "messages"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column()
+    sender: Mapped[str] = mapped_column()  # 'user' или 'bot'
+    content: Mapped[str] = mapped_column()
+    timestamp: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    chat: Mapped["Chat"] = relationship("Chat", back_populates="messages")
 
 
 core/models/user.py
 
-from sqlalchemy.orm import Mapped, mapped_column
+# core/models/user.py
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
-
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .chat import Chat
 class User(Base):
+    __tablename__ = "users"
+    
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(unique=True, index=True)
-    thread_id: Mapped[str] = mapped_column(unique=True)
+    chats: Mapped[list["Chat"]] = relationship("Chat", back_populates="user")
+
 
 docker-compose.yml
 
+version: '3.8'
+
+services:
+  db:
+    image: ankane/pgvector:latest  # Образ PostgreSQL с предустановленным pgvector
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: cilallm  # Замените на имя вашей базы данных
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: fastapi_app
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    entrypoint: ["/app/entrypoint.sh"]
+
+volumes:
+  db_data:
+
+
+entrypoint.sh
+
+#!/usr/bin/env bash
+# entrypoint.sh
+
+# Ожидаем готовности базы данных
+./wait-for-it.sh db 5432 --timeout=60 --strict -- echo "База данных доступна"
+
+# Выполняем миграции Alembic
+echo "Выполнение миграций базы данных..."
+alembic upgrade head
+
+# Запускаем сервер Uvicorn
+echo "Запуск сервера..."
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 
 requirements.txt
@@ -772,7 +1484,36 @@ langgraph
 langchain-community
 langchain-postgres
 langchain-core
-langchain-huggingface
-sentence-transformers
 yandexcloud
 python-docx
+pytesseract
+pillow
+fastapi
+uvicorn[standart]
+sqlalchemy[asyncio]
+asyncpg
+aiofiles
+pydantic-settings
+alembic
+psycopg2-binary
+gigachat
+
+wait-for-it.sh
+
+#!/usr/bin/env bash
+# wait-for-it.sh
+
+set -e
+
+host="$1"
+port="$2"
+shift 2
+cmd="$@"
+
+until nc -z "$host" "$port"; do
+  >&2 echo "Сервис $host:$port недоступен - ожидаем..."
+  sleep 5
+done
+
+>&2 echo "Сервис $host:$port доступен - продолжаем запуск $cmd"
+exec $cmd

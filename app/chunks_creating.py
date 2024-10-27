@@ -1,7 +1,7 @@
 import re
 from docx import Document as DocxDocument
 from langchain.schema import Document
-import photo_indexes
+from app import photo_indexes
 import os
 
 # Чтение текста из файла .docx

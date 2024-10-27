@@ -4,8 +4,6 @@ langgraph
 langchain-community
 langchain-postgres
 langchain-core
-langchain-huggingface
-sentence-transformers
 yandexcloud
 python-docx
 pytesseract
@@ -15,3 +13,7 @@ uvicorn[standart]
 sqlalchemy[asyncio]
 asyncpg
 aiofiles
+pydantic-settings
+alembic
+psycopg2-binary
+gigachat

@@ -1,7 +1,9 @@
 # core/models/user.py
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
-
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .chat import Chat
 class User(Base):
     __tablename__ = "users"
     
